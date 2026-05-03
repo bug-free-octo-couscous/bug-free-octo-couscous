@@ -4,107 +4,119 @@ import Control.Monad (fmap)
 -- 1. Unified Data Definition
 type Name = String
 
-data Term
-    = Var Name
-    | App Term Term
-    | Lam Name Term Term   -- Lam variable type body
-    | Pi  Name Term Term   -- Pi variable domain codomain (Dependent Product)
-    | Kind                 -- The type of types (*)
+data Type
+    = Base String          -- e.g., "Bool", "Int"
+    | Fun Type Type        -- e.g., A -> B
     deriving (Eq)
 
-instance Show Term where
-    show (Var x)     = x
-    show (App m n)   = "(" ++ show m ++ " " ++ show n ++ ")"
-    show (Lam x t e) = "λ" ++ x ++ ":" ++ show t ++ "." ++ show e
-    show (Pi x t b)  = "Π" ++ x ++ ":" ++ show t ++ "." ++ show b
-    show Kind        = "*"
+instance Show Type where
+    show (Base s) = s
+    show (Fun t1 t2) = "(" ++ show t1 ++ " -> " ++ show t2 ++ ")"
 
--- 2. Evaluation / Normalization
--- Types must be reduced to "Normal Form" to check for equality.
-substitute :: Name -> Term -> Term -> Term
+data Expr
+    = Var Name
+    | Lam Name Type Expr   -- Typed Lambda: λx:T. e
+    | App Expr Expr
+    deriving (Eq)
+
+instance Show Expr where
+    show (Var x)         = x
+    show (Lam x t e)     = "λ" ++ x ++ ":" ++ show t ++ "." ++ show e
+    show (App m n)       = "(" ++ show m ++ " " ++ show n ++ ")"
+
+-- 2. Type Checking Logic
+type Context = [(Name, Type)]
+
+-- Returns Right Type if valid, or Left ErrorMessage if invalid
+typeOf :: Context -> Expr -> Either String Type
+typeOf ctx (Var x) = 
+    case lookup x ctx of
+        Just t  -> Right t
+        Nothing -> Left $ "Type Error: Unbound variable '" ++ x ++ "'"
+
+typeOf ctx (Lam x t1 e) = do
+    t2 <- typeOf ((x, t1) : ctx) e
+    return (Fun t1 t2)
+
+typeOf ctx (App m n) = do
+    tM <- typeOf ctx m
+    tN <- typeOf ctx n
+    case tM of
+        Fun tArg tRes ->
+            if tArg == tN 
+            then Right tRes 
+            else Left $ "Type Error: Type mismatch. Expected " ++ show tArg ++ " but got " ++ show tN
+        _ -> Left "Type Error: Cannot apply a non-function type"
+
+-- 3. Helper Functions for Substitution
+freeVars :: Expr -> Set.Set Name
+freeVars (Var x)       = Set.singleton x
+freeVars (Lam x _ e)   = Set.delete x (freeVars e)
+freeVars (App m n)     = Set.union (freeVars m) (freeVars n)
+
+substitute :: Name -> Expr -> Expr -> Expr
 substitute x n (Var y)
     | x == y    = n
     | otherwise = Var y
 substitute x n (App m1 m2) = App (substitute x n m1) (substitute x n m2)
 substitute x n (Lam y t e)
-    | x == y    = Lam y (substitute x n t) e
-    | otherwise = Lam y (substitute x n t) (substitute x n e) -- Simplified (ignoring capture for brevity)
-substitute x n (Pi y t b)
-    | x == y    = Pi y (substitute x n t) b
-    | otherwise = Pi y (substitute x n t) (substitute x n b)
-substitute _ _ Kind = Kind
+    | x == y                      = Lam y t e
+    | y `Set.notMember` freeVars n = Lam y t (substitute x n e)
+    | otherwise                   =
+        let y' = y ++ "'"
+            e' = substitute y (Var y') e
+        in substitute x n (Lam y' t e')
 
-reduce :: Term -> Term
-reduce (App m n) =
-    case reduce m of
-        Lam x t e -> reduce (substitute x n e)
-        m'        -> App m' (reduce n)
-        
--- Higher-order reduction for types inside Pi and Lam
-reduce (Pi x t b)  = Pi x (reduce t) (reduce b)
-reduce (Lam x t e) = Lam x (reduce t) (reduce e)
-reduce x           = x
+-- 4. Evaluation Logic (Small-step Operational Semantics)
+reduceStep :: Expr -> Maybe Expr
+reduceStep (App (Lam x t e) n) = Just $ substitute x n e
+reduceStep (App m n) =
+    case reduceStep m of
+        Just m' -> Just (App m' n)
+        Nothing -> case reduceStep n of
+            Just n' -> Just (App m n')
+            Nothing -> Nothing
+reduceStep (Lam x t e) = Lam x t <$> reduceStep e
+reduceStep (Var _)     = Nothing
 
--- 3. Type Checking Logic
-type Context = [(Name, Term)]
+evalFull :: Expr -> Expr
+evalFull e = case reduceStep e of
+    Just e' -> evalFull e'
+    Nothing -> e
 
-typeOf :: Context -> Term -> Either String Term
-typeOf _ Kind = Left "Type Error: Kind has no type (in this simple system)"
-
-typeOf ctx (Var x) = 
-    case lookup x ctx of
-        Just t  -> Right t
-        Nothing -> Left $ "Unbound variable: " ++ x
-
--- Typing Rule for Pi: (Γ |- A : *) -> (Γ, x:A |- B : *) -> (Γ |- Πx:A.B : *)
-typeOf ctx (Pi x a b) = do
-    sA <- typeOf ctx a
-    sB <- typeOf ((x, a) : ctx) b
-    if sA == Kind && sB == Kind
-        then Right Kind
-        else Left "Type Error: Pi components must be Types"
-
--- Typing Rule for Lambda: (Γ, x:A |- e : B) -> (Γ |- λx:A.e : Πx:A.B)
-typeOf ctx (Lam x a e) = do
-    _  <- typeOf ctx a -- Ensure the domain is a valid type
-    b  <- typeOf ((x, a) : ctx) e
-    return (Pi x a b)
-
--- Typing Rule for App: (Γ |- m : Πx:A.B) -> (Γ |- n : A) -> (Γ |- m n : [n/x]B)
-typeOf ctx (App m n) = do
-    tM <- typeOf ctx m
-    tN <- typeOf ctx n
-    case reduce tM of
-        Pi x a b -> 
-            -- Check if the argument type matches the Pi domain
-            if reduce a == reduce tN
-            then Right (reduce (substitute x n b))
-            else Left $ "Type mismatch: Expected " ++ show a ++ " but got " ++ show tN
-        _ -> Left "Type Error: Expected a function (Pi) type"
-
--- 4. Main Execution
+-- 5. Main Execution
 main :: IO ()
 main = do
-    putStrLn "--- Dependent Type System (Pi Calculus) ---"
+    let tyA = Base "A"
+    let tyB = Base "B"
 
-    -- Define 'Bool' as a variable in context for demo
-    -- In a real system, you'd define Church Booleans or Inductive types.
-    let bool = Var "Bool"
-    let ctx = [("Bool", Kind), ("True", bool), ("False", bool)]
+    putStrLn "--- Simply Typed Lambda Calculus ---"
 
-    -- Example 1: Identity Function λA:*. λx:A. x
-    -- This is polymorphic identity!
-    let polyId = Lam "A" Kind (Lam "x" (Var "A") (Var "x"))
-    
-    putStrLn $ "Term: " ++ show polyId
-    case typeOf ctx polyId of
-        Right t -> putStrLn $ "Type: " ++ show t
-        Left e  -> putStrLn e
+    -- Example 1: Identity Function (λx:A. x) applied to a variable 'y'
+    -- (λx:A. x) y
+    let identity = Lam "x" tyA (Var "x")
+    let testExpr = App identity (Var "y")
 
-    -- Example 2: Applying PolyId to Bool
-    -- (λA:*. λx:A. x) Bool
-    let appBool = App polyId bool
-    putStrLn $ "\nApplying to Bool: " ++ show appBool
-    case typeOf ctx appBool of
-        Right t -> putStrLn $ "Type: " ++ show t
-        Left e  -> putStrLn e
+    -- We must provide a context where 'y' has type 'A'
+    let ctx = [("y", tyA)]
+
+    putStrLn $ "Expression: " ++ show testExpr
+    case typeOf ctx testExpr of
+        Left err -> putStrLn err
+        Right t  -> do
+            putStrLn $ "Type:       " ++ show t
+            putStrLn $ "Result:     " ++ show (evalFull testExpr)
+
+    putStrLn "\n--- Example 2: Type Mismatch ---"
+    -- Attempting to apply (λx:A. x) to a variable of type B
+    let badCtx = [("y", tyB)]
+    case typeOf badCtx testExpr of
+        Left err -> putStrLn $ "Caught: " ++ err
+        Right t  -> putStrLn $ "Result: " ++ show t
+
+    putStrLn "\n--- Example 3: Higher Order Function ---"
+    -- λf:(A->B). λx:A. f x
+    let higherOrder = Lam "f" (Fun tyA tyB) (Lam "x" tyA (App (Var "f") (Var "x")))
+    case typeOf [] higherOrder of
+        Left err -> putStrLn err
+        Right t  -> putStrLn $ "Type of HO function: " ++ show t
