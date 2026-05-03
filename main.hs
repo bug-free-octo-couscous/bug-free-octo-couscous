@@ -1,106 +1,115 @@
 import qualified Data.Set as Set
 
--- 1. Unified Data Definition
+-- 1. Data Definition
 type Name = String
+type Index = Int
 
 data Term
-    = Var Name
+    = Var Index
     | App Term Term
-    | Lam Name Term Term   
-    | Pi  Name Term Term   
-    | Kind                 -- The type of types (*)
-    | Box                  -- The type of Kind (□)
+    | Lam Name Term Term  -- Name is a hint for printing
+    | Pi  Name Term Term  
+    | Kind                -- (*)
+    | Box                 -- (□)
     deriving (Eq)
 
 instance Show Term where
-    show (Var x)     = x
+    show (Var i)     = show i
     show (App m n)   = "(" ++ show m ++ " " ++ show n ++ ")"
     show (Lam x t e) = "λ" ++ x ++ ":" ++ show t ++ "." ++ show e
     show (Pi x t b)  = "Π" ++ x ++ ":" ++ show t ++ "." ++ show b
     show Kind        = "*"
     show Box         = "□"
 
--- 2. Evaluation / Normalization
-substitute :: Name -> Term -> Term -> Term
-substitute x n (Var y)
-    | x == y    = n
-    | otherwise = Var y
-substitute x n (App m1 m2) = App (substitute x n m1) (substitute x n m2)
-substitute x n (Lam y t e)
-    | x == y    = Lam y (substitute x n t) e
-    | otherwise = Lam y (substitute x n t) (substitute x n e)
-substitute x n (Pi y t b)
-    | x == y    = Pi y (substitute x n t) b
-    | otherwise = Pi y (substitute x n t) (substitute x n b)
+-- 2. De Bruijn Shifting and Substitution
+-- shift d c t: increments all indices in t that are >= c by d
+shift :: Int -> Int -> Term -> Term
+shift d c (Var i)     = if i >= c then Var (i + d) else Var i
+shift d c (App m n)   = App (shift d c m) (shift d c n)
+shift d c (Lam x t e) = Lam x (shift d c t) (shift d (c + 1) e)
+shift d c (Pi x t b)  = Pi x (shift d c t) (shift d (c + 1) b)
+shift _ _ Kind        = Kind
+shift _ _ Box         = Box
+
+-- substitute j n m: replaces index j in m with term n
+substitute :: Index -> Term -> Term -> Term
+substitute j n (Var i)
+    | i == j    = n
+    | otherwise = Var i
+substitute j n (App m1 m2) = App (substitute j n m1) (substitute j n m2)
+substitute j n (Lam x t e) = 
+    Lam x (substitute j n t) (substitute (j + 1) (shift 1 0 n) e)
+substitute j n (Pi x t b)  = 
+    Pi x (substitute j n t) (substitute (j + 1) (shift 1 0 n) b)
 substitute _ _ Kind = Kind
 substitute _ _ Box  = Box
 
+-- 3. Evaluation / Normalization
 reduce :: Term -> Term
 reduce (App m n) =
     case reduce m of
-        Lam x t e -> reduce (substitute x n e)
+        -- Beta reduction: shift -1 because the Lam binder is removed
+        Lam _ _ e -> reduce (shift (-1) 0 (substitute 0 (shift 1 0 n) e))
         m'        -> App m' (reduce n)
 reduce (Pi x t b)  = Pi x (reduce t) (reduce b)
 reduce (Lam x t e) = Lam x (reduce t) (reduce e)
 reduce x           = x
 
--- 3. Type Checking Logic
-type Context = [(Name, Term)]
+-- 4. Type Checking Logic
+-- Context is now a list of types; index i refers to the i-th element.
+type Context = [Term]
 
 typeOf :: Context -> Term -> Either String Term
 typeOf _ Box = Left "Type Error: Box is the top of the hierarchy"
-typeOf _ Kind = Right Box  -- Kind now has a type!
+typeOf _ Kind = Right Box
 
-typeOf ctx (Var x) = 
-    case lookup x ctx of
-        Just t  -> Right t
-        Nothing -> Left $ "Unbound variable: " ++ x
+typeOf ctx (Var i) 
+    | i < length ctx = Right (shift (i + 1) 0 (ctx !! i))
+    | otherwise      = Left $ "Unbound index: " ++ show i
 
--- Rule for Pi: A and B must be types (Kind) or the universe itself (Box)
 typeOf ctx (Pi x a b) = do
     sA <- typeOf ctx a
-    sB <- typeOf ((x, a) : ctx) b
-    -- This allows for polymorphism (Kind -> Kind)
+    sB <- typeOf (a : ctx) b
     if (sA == Kind || sA == Box) && (sB == Kind || sB == Box)
         then Right sB 
         else Left "Type Error: Pi components must be Types or Kinds"
 
--- Rule for Lambda
 typeOf ctx (Lam x a e) = do
     _ <- typeOf ctx a 
-    b <- typeOf ((x, a) : ctx) e
+    b <- typeOf (a : ctx) e
     return (Pi x a b)
 
--- Rule for App
 typeOf ctx (App m n) = do
     tM <- typeOf ctx m
     tN <- typeOf ctx n
     case reduce tM of
-        Pi x a b -> 
+        Pi _ a b -> 
             if reduce a == reduce tN
-            then Right (reduce (substitute x n b))
-            else Left $ "Type mismatch: Expected " ++ show a ++ " but got " ++ show tN
-        _ -> Left $ "Type Error: " ++ show m ++ " is not a function (Pi) type"
+            then Right (shift (-1) 0 (substitute 0 (shift 1 0 n) b))
+            else Left "Type mismatch: Argument type does not match Pi domain"
+        _ -> Left $ "Type Error: " ++ show m ++ " is not a function type"
 
--- 4. Main Execution
+-- 5. Main Execution
 main :: IO ()
 main = do
-    putStrLn "--- Fixed Dependent Type System ---"
+    putStrLn "--- De Bruijn Index Type System ---"
 
-    let bool = Var "Bool"
-    let ctx = [("Bool", Kind), ("True", bool), ("False", bool)]
+    -- We'll put "Bool" in our context as index 0.
+    -- Context: [Kind] (Meaning index 0 has type Kind)
+    let ctx = [Kind] 
 
     -- Example 1: Polymorphic Identity λA:*. λx:A. x
-    let polyId = Lam "A" Kind (Lam "x" (Var "A") (Var "x"))
+    -- Nested binders: A is index 1, x is index 0.
+    let polyId = Lam "A" Kind (Lam "x" (Var 0) (Var 0))
     
     putStrLn $ "Term: " ++ show polyId
     case typeOf ctx polyId of
         Right t -> putStrLn $ "Type: " ++ show t
         Left e  -> putStrLn $ "Error: " ++ e
 
-    -- Example 2: Applying PolyId to Bool
-    let appBool = App polyId bool
-    putStrLn $ "\nApplying to Bool: " ++ show appBool
+    -- Example 2: Applying PolyId to index 0 (which is our "Bool")
+    let appBool = App polyId (Var 0)
+    putStrLn $ "\nApplying to Var 0: " ++ show appBool
     case typeOf ctx appBool of
         Right t -> putStrLn $ "Type: " ++ show t
         Left e  -> putStrLn $ "Error: " ++ e
