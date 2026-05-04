@@ -2,110 +2,126 @@
 
 module CubicalInterval where
 
+import Data.Set (Set)
+import qualified Data.Set as Set
+
 --------------------------------------------------------------------------------
--- 1. The Interval Type (De Morgan Algebra)
+-- 1. Syntax (AST)
 --------------------------------------------------------------------------------
 
 data I 
     = I0 
     | I1 
+    | Var Int      -- Added variables/dimensions (i, j, k...)
     | Meet I I 
     | Join I I 
     | Neg I
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
--- | Recursive Normalizer: Implements De Morgan Algebra identities.
-normalize :: I -> I
-normalize expr = case expr of
-    I0       -> I0
-    I1       -> I1
-    Neg i    -> normNeg (normalize i)
-    Meet i j -> normMeet (normalize i) (normalize j)
-    Join i j -> normJoin (normalize i) (normalize j)
+--------------------------------------------------------------------------------
+-- 2. DNF Representation (Semantics)
+--------------------------------------------------------------------------------
 
--- | Handle Negation logic
--- We match on specific patterns to simplify.
-normNeg :: I -> I
-normNeg I0          = I1
-normNeg I1          = I0
-normNeg (Neg i)     = i               -- Double Negation: ¬¬i = i
-normNeg (Meet i j)  = Join (normNeg i) (normNeg j) -- De Morgan: ¬(i ∧ j) = ¬i ∨ ¬j
-normNeg (Join i j)  = Meet (normNeg i) (normNeg j) -- De Morgan: ¬(i ∨ j) = ¬i ∧ ¬j
+-- A Literal is either a dimension (i) or its negation (¬i).
+data Literal = Pos Int | NegVar Int deriving (Eq, Ord)
 
--- | Handle Meet (Lattice Infimum) logic
-normMeet :: I -> I -> I
-normMeet I0 _  = I0
-normMeet _ I0  = I0
-normMeet I1 j  = j
-normMeet i I1  = i
-normMeet i j
-    | i == j    = i                   -- Idempotence: i ∧ i = i
-    | isAbs i j = i                   -- Absorption: i ∧ (i ∨ j) = i
-    | isAbs j i = j
-    | otherwise = Meet i j
-  where 
-    isAbs a (Join b c) = a == b || a == c
-    isAbs _ _          = False
+instance Show Literal where
+    show (Pos n)    = "i" ++ show n
+    show (NegVar n) = "¬i" ++ show n
 
--- | Handle Join (Lattice Supremum) logic
-normJoin :: I -> I -> I
-normJoin I1 _  = I1
-normJoin _ I1  = I1
-normJoin I0 j  = j
-normJoin i I0  = i
-normJoin i j
-    | i == j    = i                   -- Idempotence: i ∨ i = i
-    | isAbs i j = i                   -- Absorption: i ∨ (i ∧ j) = i
-    | isAbs j i = j
-    | otherwise = Join i j
+-- A Cube is a conjunction of literals: (L1 ∧ L2 ∧ ...)
+type Cube = Set Literal
+
+-- DNF is a disjunction of cubes: (Cube1 ∨ Cube2 ∨ ...)
+newtype DNF = DNF { getCubes :: Set Cube } deriving (Eq, Ord)
+
+instance Show DNF where
+    show (DNF cs) 
+        | Set.null cs = "0"
+        | Set.null (Set.findMin cs) && Set.size cs == 1 = "1"
+        | otherwise = intercalate " ∨ " (map showCube (Set.toList cs))
+      where
+        showCube c 
+            | Set.null c = "1"
+            | otherwise  = "(" ++ intercalate " ∧ " (map show (Set.toList c)) ++ ")"
+        intercalate sep = foldr (\x acc -> if acc == "" then x else x ++ sep ++ acc) ""
+
+--------------------------------------------------------------------------------
+-- 3. DNF Algebra Operations
+--------------------------------------------------------------------------------
+
+-- | Simplifies by Subsumption: A ∨ (A ∧ B) = A
+-- We remove any cube that is a superset of another cube.
+simplify :: Set Cube -> Set Cube
+simplify cubes = Set.filter (\c -> not $ any (isStrictSubsetOf c) cubes) cubes
+  where isStrictSubsetOf a b = a /= b && a `Set.isSubsetOf` b
+
+dnfJoin :: DNF -> DNF -> DNF
+dnfJoin (DNF a) (DNF b) = DNF $ simplify (Set.union a b)
+
+dnfMeet :: DNF -> DNF -> DNF
+dnfMeet (DNF as) (DNF bs) = 
+    DNF $ simplify $ Set.fromList 
+    [ Set.union a b | a <- Set.toList as, b <- Set.toList bs ]
+
+dnfNeg :: DNF -> DNF
+dnfNeg (DNF cubes) 
+    | Set.null cubes = dnfTrue
+    | otherwise = foldr dnfMeet dnfTrue (map negCube (Set.toList cubes))
   where
-    isAbs a (Meet b c) = a == b || a == c
-    isAbs _ _          = False
+    negCube c = DNF $ Set.fromList [Set.singleton (negLit l) | l <- Set.toList c]
+    negLit (Pos n)    = NegVar n
+    negLit (NegVar n) = Pos n
+    dnfTrue = DNF $ Set.singleton Set.empty
 
 --------------------------------------------------------------------------------
--- 2. Paths and Connections
+-- 4. Evaluation and Normalization
 --------------------------------------------------------------------------------
 
-type Path a = I -> a
+eval :: I -> DNF
+eval I0         = DNF Set.empty
+eval I1         = DNF (Set.singleton Set.empty)
+eval (Var n)    = DNF (Set.singleton (Set.singleton (Pos n)))
+eval (Neg i)    = dnfNeg (eval i)
+eval (Meet i j) = dnfMeet (eval i) (eval j)
+eval (Join i j) = dnfJoin (eval i) (eval j)
 
--- | Symmetry (Reverses a path)
-rev :: Path a -> Path a
-rev p i = p (normalize (Neg i))
-
--- | Connections
--- These are standard in Cubical Type Theory to map paths to higher dimensions.
-connAnd :: Path a -> I -> I -> a
-connAnd p i j = p (normalize (Meet i j))
-
-connOr :: Path a -> I -> I -> a
-connOr p i j = p (normalize (Join i j))
+-- | Normalizing an expression means converting it to DNF and back to Syntax
+-- Or simply comparing their DNF forms.
+normalize :: I -> DNF
+normalize = eval
 
 --------------------------------------------------------------------------------
--- 3. Main Execution
+-- 5. Main Execution & Tests
 --------------------------------------------------------------------------------
 
 main :: IO ()
 main = do
-    putStrLn "=== De Morgan Algebra Logic Test ==="
-    
-    let test1 = Neg (Neg (Meet I1 I0))
-    putStrLn $ "¬¬(1 ∧ 0)         -> " ++ show (normalize test1)
-    
-    let test2 = Neg (Meet (Neg I1) I1)
-    putStrLn $ "¬(¬1 ∧ 1)         -> " ++ show (normalize test2)
-    
-    let test3 = Join I1 (Meet I1 I0)
-    putStrLn $ "1 ∨ (1 ∧ 0)       -> " ++ show (normalize test3)
-    
-    let test4 = Meet (Join I0 I1) (Neg I0)
-    putStrLn $ "(0 ∨ 1) ∧ ¬0      -> " ++ show (normalize test4)
+    let i = Var 0
+    let j = Var 1
 
-    putStrLn "\n=== Path & Connection Test ==="
-    -- A simple path from "A" to "B"
-    let p i = if normalize i == I0 then "Point A" else "Point B"
+    putStrLn "=== De Morgan DNF Tests ==="
     
-    putStrLn $ "Path p at I0:      " ++ p I0
-    putStrLn $ "Path p at I1:      " ++ p I1
-    putStrLn $ "rev p at I0:       " ++ rev p I0
-    putStrLn $ "connAnd p at (1,1): " ++ connAnd p I1 I1
-    putStrLn $ "connAnd p at (1,0): " ++ connAnd p I1 I0
+    -- Idempotence: i ∨ i = i
+    putStrLn $ "i ∨ i           -> " ++ show (normalize (Join i i))
+    
+    -- Absorption: i ∨ (i ∧ j) = i
+    putStrLn $ "i ∨ (i ∧ j)     -> " ++ show (normalize (Join i (Meet i j)))
+    
+    -- De Morgan: ¬(i ∧ j) = ¬i ∨ ¬j
+    putStrLn $ "¬(i ∧ j)        -> " ++ show (normalize (Neg (Meet i j)))
+    
+    -- Double Negation: ¬¬i = i
+    putStrLn $ "¬¬i             -> " ++ show (normalize (Neg (Neg i)))
+    
+    -- Complex: (i ∨ 1) ∧ j = j
+    putStrLn $ "(i ∨ 1) ∧ j     -> " ++ show (normalize (Meet (Join i I1) j))
+
+    putStrLn "\n=== Cubical Connections ==="
+    -- connAnd i j = i ∧ j
+    let connAnd = Meet i j
+    putStrLn $ "Connection And  -> " ++ show (normalize connAnd)
+    
+    -- connOr i j = i ∨ j
+    let connOr = Join i j
+    putStrLn $ "Connection Or   -> " ++ show (normalize connOr)
