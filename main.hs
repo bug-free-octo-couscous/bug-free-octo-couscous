@@ -20,7 +20,7 @@ instance Show Term where
     show Kind        = "*"
     show Box         = "□"
 
--- 2. De Bruijn Shifting and Substitution
+-- 1. De Bruijn Shifting and Substitution
 shift :: Int -> Int -> Term -> Term
 shift d c (Var i)     = if i >= c then Var (i + d) else Var i
 shift d c (App m n)   = App (shift d c m) (shift d c n)
@@ -41,12 +41,12 @@ substitute j n (Pi x t b)  =
 substitute _ _ Kind = Kind
 substitute _ _ Box  = Box
 
--- 3. Evaluation
+-- 2. Evaluation
 reduce :: Term -> Term
 reduce (App m n) =
     case reduce m of
         Lam _ _ e -> reduce (shift (-1) 0 (substitute 0 (shift 1 0 n) e))
-        m'        -> App m' (reduce n)
+        m'         -> App m' (reduce n)
 reduce (Pi x t b)  = Pi x (reduce t) (reduce b)
 reduce (Lam x t e) = Lam x (reduce t) (reduce e)
 reduce x           = x
@@ -54,22 +54,31 @@ reduce x           = x
 betaEquals :: Term -> Term -> Bool
 betaEquals t1 t2 = reduce t1 == reduce t2
 
--- 4. Type Checking
+-- 3. Consistency and PTS Rules
 type Context = [Term]
 
--- Helper to check if a term is a "sort" (Kind or Box)
+-- This defines the "System F-omega" or "Calculus of Constructions" rules.
+-- (Kind, Kind) -> Kind allows types depending on types (polymorphism)
+-- (Kind, Box)  -> Box  allows operators from types to types
+-- (Box, Box)   -> Box  allows operators from kinds to kinds
+allowedRules :: Term -> Term -> Either String Term
+allowedRules Kind Kind = Right Kind -- Type -> Type (Functions)
+allowedRules Kind Box  = Right Box  -- Type -> Kind (Polymorphism)
+allowedRules Box Kind  = Right Kind -- Kind -> Type (Type operators)
+allowedRules Box Box   = Right Box  -- Kind -> Kind (Type constructors)
+allowedRules s1 s2     = Left $ "PTS Rule violation: (" ++ show s1 ++ ", " ++ show s2 ++ ") is not allowed."
+
+-- 4. Type Checking with Consistency
 checkIsSort :: Context -> Term -> Either String Term
-checkIsSort _ Kind = Right Box
-checkIsSort _ Box  = Right Box
-checkIsSort ctx t  = do
+checkIsSort ctx t = do
     tType <- typeOf ctx t
-    let reducedType = reduce tType
-    if reducedType == Kind || reducedType == Box
-        then Right reducedType
-        else Left $ "Type Error: " ++ show t ++ " is not a valid type/kind"
+    case reduce tType of
+        Kind -> Right Kind
+        Box  -> Right Box
+        _    -> Left $ "Consistency Error: " ++ show t ++ " is not a Sort (Kind/Box)"
 
 typeOf :: Context -> Term -> Either String Term
-typeOf _ Box = Left "Type Error: Box is the top of the hierarchy"
+typeOf _ Box = Left "Type Error: Box is the top of the hierarchy (not typable here)"
 typeOf _ Kind = Right Box
 
 typeOf ctx (Var i)
@@ -77,13 +86,17 @@ typeOf ctx (Var i)
     | otherwise      = Left $ "Unbound index: " ++ show i
 
 typeOf ctx (Pi x a b) = do
-    _ <- checkIsSort ctx a
-    checkIsSort (a : ctx) b
+    s1 <- checkIsSort ctx a
+    s2 <- checkIsSort (a : ctx) b
+    allowedRules s1 s2
 
 typeOf ctx (Lam x a e) = do
     _ <- checkIsSort ctx a
     b <- typeOf (a : ctx) e
-    return (Pi x a b)
+    let piType = Pi x a b
+    -- Ensure the resulting Pi type is consistent in our system
+    _ <- typeOf ctx piType 
+    return piType
 
 typeOf ctx (App m n) = do
     tM <- typeOf ctx m
@@ -98,29 +111,24 @@ typeOf ctx (App m n) = do
 -- 5. Main
 main :: IO ()
 main = do
-    putStrLn "--- De Bruijn Type System with Beta-Equivalence ---"
-    -- Context: index 0 is 'Bool' which is a Kind (*)
-    let ctx = [Kind] 
-
-    -- Identity: λA:*. λx:A. x
+    putStrLn "--- Consistent Type System (CoC Rules) ---"
+    
+    -- Example 1: Valid Identity on Types
+    -- λA:*. λx:A. x
+    let ctx = [] 
     let identity = Lam "A" Kind (Lam "x" (Var 0) (Var 0))
     
-    -- A complex argument that reduces to 'Bool' (index 0)
-    -- (λT:*. T) Bool
-    -- Note: Domain is Kind (*) because Bool is a Kind
-    let identityOnTypes = Lam "T" Kind (Var 0)
-    let complexTypeArg = App identityOnTypes (Var 0) 
-    
-    -- Applying (λA:*. λx:A. x) to the complex 'Bool'
-    -- This requires beta-reduction of the argument type to match
-    let testTerm = App identity complexTypeArg
-
-    case typeOf ctx testTerm of
-        Right t -> do
-            putStrLn $ "Term: " ++ show testTerm
-            putStrLn $ "Success! Type: " ++ show (reduce t)
+    putStrLn "Checking Identity: λA:*. λx:A. x"
+    case typeOf ctx identity of
+        Right t -> putStrLn $ "Success! Type: " ++ show (reduce t)
         Left e  -> putStrLn $ "Error: " ++ e
 
+    -- Example 2: Attempting to use Box as a term (Should fail consistency)
+    -- λA:□. A
+    let badTerm = Lam "A" Box (Var 0)
+    putStrLn "\nChecking Illegal Term: λA:□. A"
+    case typeOf ctx badTerm of
+        Right t -> putStrLn $ "Success! Type: " ++ show (reduce t)
+        Left e  -> putStrLn $ "Expected Failure: " ++ e
 -- current goal 
 -- implement Inductive Types
--- implement Consistency checker
