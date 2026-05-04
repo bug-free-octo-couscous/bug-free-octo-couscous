@@ -94,3 +94,4 @@ main = do
     
     putStrLn "\nTesting Square Boundaries:"
     boundaryCheck mySquare
+    
