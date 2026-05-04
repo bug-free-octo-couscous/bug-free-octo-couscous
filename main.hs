@@ -8,15 +8,13 @@ data Term
     | App Term Term
     | Lam Name Term Term
     | Pi  Name Term Term
-    | Kind
-    | Box
-    -- Cubical Additions
-    | Interval          -- The type I
-    | I0                -- The endpoint 0
-    | I1                -- The endpoint 1
-    | PathP Term Term Term -- PathP (A : I -> *) x y
-    | PLam Term Term    -- Path abstraction: <name> e (where name is for display)
-    | PApp Term Term    -- Path application: e @ i
+    | Universe Int          -- Hierarchy: Type 0, Type 1, etc.
+    | Interval              -- The type I
+    | I0                    -- The endpoint 0
+    | I1                    -- The endpoint 1
+    | PathP Term Term Term  -- PathP (A : I -> Type n) x y
+    | PLam Term Term        -- Path abstraction: <name> e
+    | PApp Term Term        -- Path application: e @ i
     deriving (Eq)
 
 instance Show Term where
@@ -24,8 +22,7 @@ instance Show Term where
     show (App m n)     = "(" ++ show m ++ " " ++ show n ++ ")"
     show (Lam x t e)   = "λ" ++ x ++ ":" ++ show t ++ "." ++ show e
     show (Pi x t b)    = "Π" ++ x ++ ":" ++ show t ++ "." ++ show b
-    show Kind          = "*"
-    show Box           = "□"
+    show (Universe n)  = "Type" ++ show n
     show Interval      = "I"
     show I0            = "0"
     show I1            = "1"
@@ -70,7 +67,6 @@ reduce (App m n) =
 reduce (PApp m i) =
     let i' = reduce i
     in case reduce m of
-        -- Cubical reduction: (PLam e) @ 0 -> e[0], (PLam e) @ 1 -> e[1]
         PLam _ e -> case i' of
             I0 -> reduce (shift (-1) 0 (substitute 0 I0 e))
             I1 -> reduce (shift (-1) 0 (substitute 0 I1 e))
@@ -85,43 +81,35 @@ reduce x             = x
 betaEquals :: Term -> Term -> Bool
 betaEquals t1 t2 = reduce t1 == reduce t2
 
--- 3. Consistency and PTS Rules
+-- 3. Type Checking
 type Context = [Term]
 
-allowedRules :: Term -> Term -> Either String Term
-allowedRules Kind Kind = Right Kind
-allowedRules Kind Box  = Right Box
-allowedRules Box Kind  = Right Kind
-allowedRules Box Box   = Right Box
-allowedRules s1 s2     = Left $ "PTS Rule violation: (" ++ show s1 ++ ", " ++ show s2 ++ ")"
-
--- 4. Type Checking
-checkIsSort :: Context -> Term -> Either String Term
-checkIsSort ctx t = do
+-- Helper to ensure a term is a Type_n and return n
+checkIsUniverse :: Context -> Term -> Either String Int
+checkIsUniverse ctx t = do
     tType <- typeOf ctx t
     case reduce tType of
-        Kind -> Right Kind
-        Box  -> Right Box
-        _    -> Left $ "Consistency Error: " ++ show t ++ " is not a Sort"
+        Universe n -> Right n
+        _          -> Left $ "Expected a Type level, but got: " ++ show tType
 
 typeOf :: Context -> Term -> Either String Term
-typeOf _ Box  = Left "Type Error: Box is untypable"
-typeOf _ Kind = Right Box
-typeOf _ Interval = Right Box
-typeOf _ I0 = Right Interval
-typeOf _ I1 = Right Interval
+typeOf _ (Universe n) = Right (Universe (n + 1))
+typeOf _ Interval     = Right (Universe 0) -- I : Type 0
+typeOf _ I0           = Right Interval
+typeOf _ I1           = Right Interval
 
 typeOf ctx (Var i)
     | i < length ctx = Right (shift (i + 1) 0 (ctx !! i))
     | otherwise      = Left $ "Unbound index: " ++ show i
 
 typeOf ctx (Pi x a b) = do
-    s1 <- checkIsSort ctx a
-    s2 <- checkIsSort (a : ctx) b
-    allowedRules s1 s2
+    lvlA <- checkIsUniverse ctx a
+    lvlB <- checkIsUniverse (a : ctx) b
+    -- Standard PTS rule for universes: max level
+    return $ Universe (max lvlA lvlB)
 
 typeOf ctx (Lam x a e) = do
-    _ <- checkIsSort ctx a
+    _ <- checkIsUniverse ctx a
     b <- typeOf (a : ctx) e
     return $ Pi x a b
 
@@ -132,29 +120,37 @@ typeOf ctx (App m n) = do
         Pi _ a b ->
             if betaEquals a tN
             then Right (shift (-1) 0 (substitute 0 (shift 1 0 n) b))
-            else Left $ "Type mismatch in App"
+            else Left $ "Type mismatch: expected " ++ show a ++ " but got " ++ show tN
         _ -> Left $ "Type Error: " ++ show m ++ " is not a function"
 
 typeOf ctx (PathP a x y) = do
     ta <- typeOf ctx a
     case reduce ta of
-        Pi _ Interval Kind -> do
+        -- a must be a mapping from Interval to some Type n
+        Pi _ Interval (Universe n) -> do
             tx <- typeOf ctx x
             ty <- typeOf ctx y
             let type0 = reduce (App a I0)
             let type1 = reduce (App a I1)
             if betaEquals tx type0 && betaEquals ty type1
-                then Right Kind
-                else Left "PathP boundary mismatch"
-        _ -> Left "PathP requires a type family over Interval"
+                then Right (Universe n)
+                else Left "PathP boundary mismatch: endpoints do not match PathP types"
+        _ -> Left "PathP requires a type family (I -> Type n)"
 
 typeOf ctx (PLam a e) = do
-    _ <- typeOf ctx a -- a: I -> Kind
-    -- The body e is checked with the interval variable in context
-    _ <- typeOf (Interval : ctx) e
-    let start = reduce (shift (-1) 0 (substitute 0 I0 e))
-    let end   = reduce (shift (-1) 0 (substitute 0 I1 e))
-    return $ PathP a start end
+    ta <- typeOf ctx a 
+    case reduce ta of
+        Pi _ Interval (Universe _) -> do
+            -- Body e is checked with the interval variable at the top of context
+            te <- typeOf (Interval : ctx) e
+            let expectedBodyType = reduce (App (shift 1 0 a) (Var 0))
+            if betaEquals te expectedBodyType
+                then do
+                    let start = reduce (shift (-1) 0 (substitute 0 I0 e))
+                    let end   = reduce (shift (-1) 0 (substitute 0 I1 e))
+                    return $ PathP a start end
+                else Left "PLam body type does not match path type family"
+        _ -> Left "PLam requires a path type family (I -> Type n)"
 
 typeOf ctx (PApp m i) = do
     tm <- typeOf ctx m
@@ -163,20 +159,22 @@ typeOf ctx (PApp m i) = do
         (PathP a _ _, Interval) -> Right (reduce (App a i))
         _ -> Left "PApp expects a Path and an Interval coordinate"
 
--- 5. Main with PathP Example
+-- 4. Main Execution
 main :: IO ()
 main = do
-    putStrLn "--- Cubical Type System Test ---"
+    putStrLn "--- Hierarchical Cubical Type System Test ---"
     
-    -- Let A be a constant type (Kind)
-    -- aFamily = λi:I. A
-    let aFamily = Lam "i" Interval (Var 1) -- Var 1 points to A in ctx
-    let ctx = [Kind] -- Index 0 is A
+    -- Context: A : Type 0
+    let ctx = [Universe 0] 
     
-    -- Create a reflexivity path for some x:A
-    -- p = <_> x
-    let x = Var 1 -- x:A
-    let ctx2 = [Var 0, Kind] -- Index 0 is x, Index 1 is A
+    -- Path family: λi:I. A
+    -- In De Bruijn, A is Var 1 (skipped over 'i')
+    let aFamily = Lam "i" Interval (Var 1)
+    
+    -- Reflexivity for some x : A
+    -- Context: x : A, A : Type 0
+    let ctx2 = [Var 0, Universe 0]
+    -- refl = <_> x
     let refl = PLam (shift 1 0 aFamily) (Var 1)
     
     putStrLn $ "Term: " ++ show refl
@@ -185,8 +183,8 @@ main = do
             putStrLn $ "Type: " ++ show t
             putStrLn $ "Reduced @ 0: " ++ show (reduce (PApp refl I0))
             putStrLn $ "Reduced @ 1: " ++ show (reduce (PApp refl I1))
-        Left e  -> putStrLn $ "Error: " ++ e
+        Left e -> putStrLn $ "Error: " ++ e
 -- current goal 
--- switch to cumulative hierarchy of universes
--- switch to cubical type theory plan.txt
--- implement Inductive Types
+-- composition
+-- glueing
+-- de morgan algebra

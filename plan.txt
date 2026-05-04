@@ -1,4 +1,1 @@
-switch to cubical
-Add interval
-I,I0,I1
-Add PathP
+switch to cumulative hierarchy of universes
