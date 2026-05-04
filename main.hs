@@ -3,7 +3,7 @@
 module CubicalInterval where
 
 --------------------------------------------------------------------------------
--- 1. The Interval Type (De Morgan Algebra)
+-- 1. The Interval Type (With Recursive Normalization)
 --------------------------------------------------------------------------------
 
 data I 
@@ -14,9 +14,8 @@ data I
     | Neg I
     deriving (Show, Eq)
 
--- | Deep Normalization
--- Collapses the interval logic recursively to ensure terms like 
--- Neg (Meet I0 I1) simplify to I1.
+-- | Recursive Normalizer: Collapses the De Morgan Algebra.
+-- This ensures that (Neg (Neg i)) and (Meet I1 i) actually simplify.
 normalize :: I -> I
 normalize I0 = I0
 normalize I1 = I1
@@ -47,70 +46,66 @@ normalize (Join i j) =
                  | otherwise -> Join a b
 
 --------------------------------------------------------------------------------
--- 2. Paths and Squares
+-- 2. Paths and Operations
 --------------------------------------------------------------------------------
 
 type Path a = I -> a
-type Square a = I -> I -> a
 
--- | Constant path (Reflexivity)[cite: 1]
-refl :: a -> Path a
-refl x _ = x
-
--- | Path Reversal (p⁻¹)[cite: 1]
+-- | Reverses a path (p⁻¹)
 rev :: Path a -> Path a
 rev p i = p (normalize (Neg i))
 
+-- | Constant path
+refl :: a -> Path a
+refl x _ = x
+
 -- | Path Composition (p ∙ q)
--- A simplified composition that switches from p to q at the midpoint.
+-- Connects two paths where p(1) == q(0).
+-- This uses the interval dimension to "glue" them together.
 trans :: Path a -> Path a -> Path a
 trans p q i = case normalize i of
     I0 -> p I0
     I1 -> q I1
-    _  -> q i -- Simplified logic for symbolic execution
+    _  -> q i -- In a real system, this involves a Kan composition
 
 --------------------------------------------------------------------------------
--- 3. Connections (Path to Square)
+-- 3. Squares (2D Cubes)
 --------------------------------------------------------------------------------
 
--- | The 'connection' allows us to view a path as a square where 
--- three sides are constant and one side is the path.
-connection0 :: Path a -> Square a
-connection0 p i j = p (normalize (Meet i j))
+type Square a = I -> I -> a
 
-connection1 :: Path a -> Square a
-connection1 p i j = p (normalize (Join i j))
+-- | A square where the edges are defined by specific paths.
+mkSquare :: Path a -> Path a -> Path a -> Path a -> Square a
+mkSquare bottom top left right i j = 
+    case (normalize i, normalize j) of
+        (_, I0) -> bottom i
+        (_, I1) -> top i
+        (I0, _) -> left j
+        (I1, _) -> right j
+        _       -> bottom i -- Simplistic filler
 
 --------------------------------------------------------------------------------
--- 4. Main Execution and Visualization
+-- 4. Main Execution
 --------------------------------------------------------------------------------
-
--- | Helper to print a 2D boundary of a square
-printSquare :: String -> Square String -> IO ()
-printSquare label sq = do
-    putStrLn $ "--- " ++ label ++ " ---"
-    putStrLn $ "p(0,0): " ++ sq I0 I0
-    putStrLn $ "p(1,0): " ++ sq I1 I0
-    putStrLn $ "p(0,1): " ++ sq I0 I1
-    putStrLn $ "p(1,1): " ++ sq I1 I1
-    putStrLn ""
 
 main :: IO ()
 main = do
-    -- 1. Logic Simplification[cite: 1]
-    let complex = Join (Meet I1 (Neg I0)) (Neg I1)
-    putStrLn $ "Simplified Logic: " ++ show (normalize complex) -- Should be I1
+    putStrLn "--- Interval Logic Test ---"
+    let complex = Meet (Neg (Neg I1)) (Join I0 I1)
+    putStrLn $ "Original: Meet (Neg (Neg I1)) (Join I0 I1)"
+    putStrLn $ "Normalized: " ++ show (normalize complex)
     
-    -- 2. Path Setup
-    let p i = if normalize i == I0 then "Left" else "Right"
+    putStrLn "\n--- Path Operations ---"
+    let p = \i -> if normalize i == I0 then "Point A" else "Point B"
+    let q = \i -> if normalize i == I0 then "Point B" else "Point C"
     
-    -- 3. Connection Test
-    -- This turns a 1D path into a 2D square using the 'Meet' operation.
-    let sq = connection0 p
-    printSquare "Connection Square (Meet-based)" sq
+    let p_rev = rev p
+    putStrLn $ "Path P at I0: " ++ p I0
+    putStrLn $ "Path P at I1: " ++ p I1
+    putStrLn $ "Reversed P at I0: " ++ p_rev I0
     
-    -- 4. Composition Test
-    let q i = if normalize i == I0 then "Right" else "Far Right"
-    let composed = trans p q
-    putStrLn $ "Composed Path at 0: " ++ composed I0
-    putStrLn $ "Composed Path at 1: " ++ composed I1
+    putStrLn "\n--- Square Boundary Check ---"
+    -- A square where all edges are "Point X"
+    let sq i j = "Coord(" ++ show (normalize i) ++ "," ++ show (normalize j) ++ ")"
+    putStrLn $ "Square at (I0, I1): " ++ sq I0 I1
+    putStrLn $ "Square at (I1, I1): " ++ sq I1 I1
