@@ -33,6 +33,7 @@ shift _ _ Kind        = Kind
 shift _ _ Box         = Box
 -- if i < c then bound variable
 -- if i >= c then free variable need +1 to c 
+
 -- substitute j n m: replaces index j in m with term n
 substitute :: Index -> Term -> Term -> Term
 substitute j n (Var i)
@@ -45,6 +46,7 @@ substitute j n (Pi x t b)  =
     Pi x (substitute j n t) (substitute (j + 1) (shift 1 0 n) b)
 substitute _ _ Kind = Kind
 substitute _ _ Box  = Box
+-- find and replace
 
 -- 3. Evaluation / Normalization
 reduce :: Term -> Term
