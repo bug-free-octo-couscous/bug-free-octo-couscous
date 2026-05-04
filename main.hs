@@ -15,6 +15,9 @@ data Term
     | PathP Term Term Term  -- PathP (A : I -> Type n) x y
     | PLam Term Term        -- Path abstraction: <name> e
     | PApp Term Term        -- Path application: e @ i
+    | Glue Term Term Term   -- Glue A {φ: I} (f : Partial φ B, B : Type)
+    | Total Term Term Term  -- glue [φ -> t] a
+    | Unglue Term Term      -- unglue t [φ -> f]
     deriving (Eq)
 
 instance Show Term where
@@ -39,6 +42,9 @@ shift d c (Pi x t b)    = Pi x (shift d c t) (shift d (c + 1) b)
 shift d c (PathP a x y) = PathP (shift d c a) (shift d c x) (shift d c y)
 shift d c (PLam t e)    = PLam (shift d c t) (shift d (c + 1) e)
 shift d c (PApp m i)    = PApp (shift d c m) (shift d c i)
+shift d c (Glue a phi f)   = Glue (shift d c a) (shift d c phi) (shift d c f)
+shift d c (Total phi t a)  = Total (shift d c phi) (shift d c t) (shift d c a)
+shift d c (Unglue t phi)   = Unglue (shift d c t) (shift d c phi)
 shift _ _ t             = t
 
 substitute :: Index -> Term -> Term -> Term
@@ -56,6 +62,9 @@ substitute j n (PLam t e) =
     PLam (substitute j n t) (substitute (j + 1) (shift 1 0 n) e)
 substitute j n (PApp m i) = 
     PApp (substitute j n m) (substitute j n i)
+substitute j n (Glue a p f)  = Glue (substitute j n a) (substitute j n p) (substitute j n f)
+substitute j n (Total p t a) = Total (substitute j n p) (substitute j n t) (substitute j n a)
+substitute j n (Unglue t p)  = Unglue (substitute j n t) (substitute j n p)
 substitute _ _ t = t
 
 -- 2. Evaluation
@@ -76,6 +85,27 @@ reduce (Pi x t b)    = Pi x (reduce t) (reduce b)
 reduce (Lam x t e)   = Lam x (reduce t) (reduce e)
 reduce (PathP a x y) = PathP (reduce a) (reduce x) (reduce y)
 reduce (PLam t e)    = PLam (reduce t) (reduce e)
+reduce (Unglue t phi) =
+    let t' = reduce t
+        p' = reduce phi
+    in case p' of
+        I1 -> case t' of
+                -- If phi is 1, it must be the partial element 'u' 
+                -- provided in the 'Total' constructor
+                Total _ u _ -> reduce u 
+                _           -> Unglue t' p'
+        I0 -> case t' of
+                -- If phi is 0, it is just the base element 'a'
+                Total _ _ a -> reduce a
+                _           -> Unglue t' p'
+        _ -> Unglue t' p'
+
+reduce (Total phi t a) = 
+    let p' = reduce phi
+    in case p' of
+        I1 -> reduce t -- Computation: glue [1 -> t] a = t
+        _  -> Total p' (reduce t) (reduce a)
+reduce (Glue a p f)  = Glue (reduce a) (reduce p) (reduce f)
 reduce x             = x
 
 betaEquals :: Term -> Term -> Bool
@@ -159,6 +189,32 @@ typeOf ctx (PApp m i) = do
         (PathP a _ _, Interval) -> Right (reduce (App a i))
         _ -> Left "PApp expects a Path and an Interval coordinate"
 
+-- glue
+typeOf ctx (Glue a phi f) = do
+    _ <- checkIsUniverse ctx a
+    tPhi <- typeOf ctx phi
+    -- In a full system, we'd check if phi is a valid formula. 
+    -- Here we ensure it's on the Interval.
+    if reduce tPhi /= Interval 
+       then Left "Cofibration (phi) must be an Interval term"
+       else do
+           -- In a real upgrade, you would check:
+           -- 1. f is a partial function defined on phi
+           -- 2. f maps to types that are equivalent to 'a'
+           Right (Universe 0) -- Simplified: Glue results in a Type
+
+typeOf ctx (Total phi t a) = do
+    ta <- typeOf ctx a
+    -- Upgrade: ensure that when phi = 1, t's type matches 
+    -- the partial type specified in the Glue
+    return $ Glue ta phi t
+    
+typeOf ctx (Unglue t phi) = do
+    tt <- typeOf ctx t
+    case reduce tt of
+        Glue b _ _ -> Right b
+        _ -> Left "Unglue expects a term of Glue type"
+-- glue
 -- 4. Main Execution
 main :: IO ()
 main = do
@@ -184,6 +240,7 @@ main = do
             putStrLn $ "Reduced @ 0: " ++ show (reduce (PApp refl I0))
             putStrLn $ "Reduced @ 1: " ++ show (reduce (PApp refl I1))
         Left e -> putStrLn $ "Error: " ++ e
+
 -- current goal 
 -- glueing
 -- composition
