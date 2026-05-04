@@ -132,5 +132,5 @@ main = do
         Left e  -> putStrLn $ "Expected Failure: " ++ e
         
 -- current goal 
+-- switch to cubical type theory plan.txt
 -- implement Inductive Types
--- switch to cubical type theory 
