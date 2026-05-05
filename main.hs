@@ -16,6 +16,8 @@ data I
     | Meet I I | Join I I | Neg I
     deriving (Eq, Ord)
 
+-- definition type I
+
 instance Show I where
     show I0         = "0"
     show I1         = "1"
@@ -24,13 +26,22 @@ instance Show I where
     show (Join i j) = "(" ++ show i ++ " ∨ " ++ show j ++ ")"
     show (Neg i)    = "¬" ++ show i
 
+-- show I
+
 data Literal = Pos Int | NegVar Int deriving (Eq, Ord)
+
+-- definition type Literal
 
 instance Show Literal where
     show (Pos n)    = "i" ++ show n
     show (NegVar n) = "¬i" ++ show n
 
+-- show Literal
+
 newtype DNF = DNF { getCubes :: Set (Set Literal) } deriving (Eq, Ord)
+
+-- definition type DNF light 
+-- new type light weight than data
 
 instance Show DNF where
     show (DNF cs)
@@ -43,12 +54,16 @@ instance Show DNF where
                 then "1"
                 else "(" ++ intercalate " ∧ " (map show (Set.toList c)) ++ ")"
 
+-- show DNF
+
 --------------------------------------------------------------------------------
 -- 2. Cubical Dependent Syntax
 --------------------------------------------------------------------------------
 
 type Name  = String
 type Level = Int
+
+-- alias
 
 data Term
     = TVar Name
@@ -116,6 +131,8 @@ data Term
     --   unglue ⊥ _      g  ≡  g      (g already lives in A)
     deriving (Eq)
 
+-- definition type Term
+
 instance Show Term where
     show t = case t of
         TVar x      -> x
@@ -146,6 +163,8 @@ instance Show Term where
             ++ "(" ++ show te ++ ") "
             ++ show g
 
+-- show Term
+
 --------------------------------------------------------------------------------
 -- 3. Evaluation & Substitution
 --------------------------------------------------------------------------------
@@ -175,6 +194,8 @@ subst x s term = case term of
         TGlueElem (subst x s phi) (subst x s t) (subst x s a)
     TUnglue phi te g        ->
         TUnglue (subst x s phi) (subst x s te) (subst x s g)
+
+-- need update to make it use de bruijin index
 
 -- | Normalizes terms to Normal Form
 eval :: Term -> Term
@@ -260,6 +281,7 @@ eval t = case t of
            then eval g           -- unglue ⊥ _     g  ≡  g
            else TUnglue phi' (eval te) (eval g)
     _ -> t
+
 
 --------------------------------------------------------------------------------
 -- 4. Interval Algebra
