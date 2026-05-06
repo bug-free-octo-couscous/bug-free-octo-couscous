@@ -1,9 +1,11 @@
 import CubicalLambda
-
 import Parser
 
+import System.Environment (getArgs)
+import System.IO          (hPutStrLn, stderr)
+
 --------------------------------------------------------------------------------
--- Main – parse → infer round-trip demo
+-- Term checking
 --------------------------------------------------------------------------------
 
 tryParse :: String -> IO ()
@@ -17,46 +19,44 @@ tryParse src = do
                 Right ty -> putStrLn $ "    : " ++ show ty
                 Left err -> putStrLn $ "    TYPE ERROR: " ++ show err
 
+--------------------------------------------------------------------------------
+-- File mode
+-- Each non-empty, non-comment line is treated as one term.
+-- Lines starting with '--' are comments and are skipped.
+--------------------------------------------------------------------------------
+
+processFile :: FilePath -> IO ()
+processFile path = do
+    contents <- readFile path
+    let ls = zip [1..] (lines contents)
+    putStrLn $ "=== " ++ path ++ " ===\n"
+    mapM_ processLine ls
+    putStrLn ""
+  where
+    processLine (_, "")          = return ()
+    processLine (_, ('-':'-':_)) = return ()
+    processLine (n, line)        = do
+        putStr $ "[line " ++ show (n :: Int) ++ "] "
+        tryParse line
+
+--------------------------------------------------------------------------------
+-- Entry point
+--------------------------------------------------------------------------------
+
+usage :: String
+usage = unlines
+    [ "Usage:"
+    , "  cubical <file> ...       check every term in each file"
+    , ""
+    , "File format:"
+    , "  One term per line."
+    , "  Lines starting with '--' are comments."
+    , "  Blank lines are ignored."
+    ]
+
 main :: IO ()
 main = do
-    putStrLn "=== Cubical Lambda Parser Demo ===\n"
-
-    -- Universes
-    tryParse "U0"
-    tryParse "U1"
-
-    -- Pi type  Π(x:U0). U0
-    tryParse "\928(x:U0). U0"
-
-    -- Lambda  λx. x  (needs a check, not infer — shown as parse only)
-    putStr   "  parse  \"λx. x\"\n    => "
-    case parseTerm "λx. x" of
-        Left e  -> putStrLn $ "PARSE ERROR: " ++ e
-        Right t -> putStrLn (show t)
-
-    -- Path type  Path U0 U0 U0
-    tryParse "Path U1 U0 U0"
-
-    -- Interval pseudo-type
-    tryParse "𝕀"
-
-    -- Nested application  (Π(f:Π(x:U0).U0). U0)
-    tryParse "\928(f:\928(x:U0).U0). U0"
-
-    -- hcomp
-    putStr   "  parse  hcomp U0 [i0] (⟨i⟩ U0) U0\n    => "
-    case parseTerm "hcomp U0 [i0] (\8992i\8993 U0) U0" of
-        Left e  -> putStrLn $ "PARSE ERROR: " ++ e
-        Right t -> putStrLn (show t)
-
-    -- Interval expression parser
-    putStrLn "\n--- Interval expressions ---"
-    mapM_ (\s -> case parseInterval s of
-                    Left e  -> putStrLn $ "  " ++ s ++ " => ERROR: " ++ e
-                    Right i -> putStrLn $ "  " ++ s ++ " => " ++ show i)
-        [ "i0"
-        , "i1 \8744 i2"     -- i1 ∨ i2
-        , "i0 \8743 \172i1" -- i0 ∧ ¬i1
-        , "0"
-        , "1"
-        ]
+    args <- getArgs
+    case args of
+        [] -> putStr usage
+        files      -> mapM_ processFile files
