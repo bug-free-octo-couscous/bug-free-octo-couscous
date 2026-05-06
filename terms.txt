@@ -1,8 +1,0 @@
--- this is a comment
-U0
-U1
-Path U1 U0 U0
-Π(x:U0). U0
-
--- interval stuff
-𝕀

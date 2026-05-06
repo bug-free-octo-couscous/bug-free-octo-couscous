@@ -6,8 +6,8 @@ module Parser
 
 import CubicalLambda
 
-import Data.Char (isAlphaNum, isAlpha, isDigit, isSpace)
-import Data.List (isPrefixOf, stripPrefix)
+import Data.Char  (isAlphaNum, isAlpha, isDigit, isSpace)
+import Data.List  (stripPrefix)
 import Control.Monad (void)
 
 --------------------------------------------------------------------------------
@@ -15,19 +15,18 @@ import Control.Monad (void)
 --------------------------------------------------------------------------------
 
 type ParseError = String
-
--- | Parsing environment: list of in-scope name hints, outermost-first.
---   Position 0 in the list = the most-recently-bound name (de Bruijn 0).
-type Env = [Name]
+type Env        = [Name]
 
 --------------------------------------------------------------------------------
--- Parser type
+-- Parser monad
 --------------------------------------------------------------------------------
 
 newtype Parser a = Parser { runParser :: String -> Either ParseError (a, String) }
 
 instance Functor Parser where
-    fmap f (Parser p) = Parser $ \s -> fmap (\(a, r) -> (f a, r)) (p s)
+    fmap f (Parser p) = Parser $ \s -> case p s of
+        Left err     -> Left err
+        Right (a, r) -> Right (f a, r)
 
 instance Applicative Parser where
     pure a = Parser $ \s -> Right (a, s)
@@ -43,19 +42,19 @@ instance Monad Parser where
         runParser (f a) s'
 
 --------------------------------------------------------------------------------
--- Primitive combinators
+-- Primitives
 --------------------------------------------------------------------------------
 
 failP :: ParseError -> Parser a
 failP msg = Parser $ \_ -> Left msg
 
+-- | Run p; on failure restore input unconsumed.
 try :: Parser a -> Parser (Maybe a)
 try (Parser p) = Parser $ \s ->
     case p s of
-        Left _  -> Right (Nothing, s)
+        Left _        -> Right (Nothing, s)
         Right (a, s') -> Right (Just a, s')
 
--- | Try the first parser; fall back to the second on failure.
 (<|>) :: Parser a -> Parser a -> Parser a
 Parser p <|> Parser q = Parser $ \s ->
     case p s of
@@ -63,92 +62,57 @@ Parser p <|> Parser q = Parser $ \s ->
         Left _  -> q s
 infixl 3 <|>
 
-satisfy :: (Char -> Bool) -> Parser Char
-satisfy f = Parser $ \s -> case s of
-    (c:cs) | f c -> Right (c, cs)
-    _            -> Left "unexpected character"
-
-char :: Char -> Parser Char
-char c = satisfy (== c) `orElse` ("expected '" ++ [c] ++ "'")
-
-orElse :: Parser a -> ParseError -> Parser a
-orElse (Parser p) msg = Parser $ \s ->
-    case p s of
-        Left _  -> Left msg
-        Right r -> Right r
-
-string :: String -> Parser String
-string str = Parser $ \s ->
-    case stripPrefix str s of
-        Just rest -> Right (str, rest)
-        Nothing   -> Left ("expected \"" ++ str ++ "\"")
-
--- | Consume zero or more spaces/tabs/newlines.
 spaces :: Parser ()
 spaces = Parser $ \s -> Right ((), dropWhile isSpace s)
 
 lexeme :: Parser a -> Parser a
 lexeme p = spaces *> p
 
--- | Try to parse a keyword; succeed only if not followed by alphanumeric/'_'.
+-- | Match an exact string after skipping spaces.
+symbol :: String -> Parser ()
+symbol sym = lexeme $ Parser $ \s ->
+    case stripPrefix sym s of
+        Just rest -> Right ((), rest)
+        Nothing   -> Left ("expected " ++ show sym)
+
+-- | Match a keyword: must NOT be followed by alnum or '_'.
 keyword :: String -> Parser ()
 keyword kw = lexeme $ Parser $ \s ->
     case stripPrefix kw s of
-        Just rest@(c:_) | isAlphaNum c || c == '_' -> Left ("expected keyword " ++ kw)
-        Just rest -> Right ((), rest)
-        Nothing   -> Left ("expected keyword " ++ kw)
+        Nothing         -> Left ("expected keyword " ++ kw)
+        Just (c:_) | isAlphaNum c || c == '_'
+                        -> Left ("expected keyword " ++ kw)
+        Just rest       -> Right ((), rest)
 
--- | Parse a Unicode prefix exactly (useful for multi-byte symbols).
-symbol :: String -> Parser ()
-symbol sym = void (lexeme (string sym))
-
--- | A name: starts with a letter or '_', continues with alnum or '_' or '\''.
+-- | Identifier: starts with letter/'_', continues with alnum/'_'/'\''.
 name :: Parser Name
 name = lexeme $ Parser $ \s ->
-    case dropWhile isSpace s of
-        [] -> Left "expected name"
-        (c:cs)
-            | isAlpha c || c == '_' ->
-                let (rest, remaining) = span (\x -> isAlphaNum x || x == '_' || x == '\'') cs
-                in Right (c:rest, remaining)
-            | otherwise -> Left "expected name"
-
--- | Natural number (used for universe levels and de Bruijn indices in output,
---   but also for numeric suffixes on interval variables like i0, i2).
-natural :: Parser Int
-natural = lexeme $ Parser $ \s ->
-    case dropWhile isSpace s of
-        [] -> Left "expected number"
-        cs -> case span isDigit cs of
-            ("", _) -> Left "expected number"
-            (ds, rest) -> Right (read ds, rest)
+    case s of
+        (c:cs) | isAlpha c || c == '_' ->
+            let (mid, rest) = span (\x -> isAlphaNum x || x == '_' || x == '\'') cs
+            in  Right (c : mid, rest)
+        _ -> Left "expected name"
 
 parens :: Parser a -> Parser a
-parens p = symbol "(" *> p <* symbol ")"
+parens   p = symbol "(" *> p <* symbol ")"
 
 brackets :: Parser a -> Parser a
 brackets p = symbol "[" *> p <* symbol "]"
 
+-- ⟨…⟩  U+27E8 / U+27E9
 angles :: Parser a -> Parser a
-angles p = symbol "\8992" *> p <* symbol "\8993"
--- ⟨ = \8992, ⟩ = \8993
+angles p = symbol "\10216" *> p <* symbol "\10217"
 
 --------------------------------------------------------------------------------
--- Interval Parser
+-- Interval expression parser
 --------------------------------------------------------------------------------
 
--- | Parse an interval expression.
---   Grammar (associative, left-to-right):
---     iexpr  ::= ijoin
---     ijoin  ::= imeet ('∨' imeet)*
---     imeet  ::= ineg  ('∧' ineg)*
---     ineg   ::= '¬' ineg | iatom
---     iatom  ::= '0' | '1' | 'i' NAT | '(' iexpr ')'
 parseInterval :: String -> Either ParseError I
-parseInterval s = case runParser (spaces *> iExpr) s of
-    Left err      -> Left err
-    Right (i, "") -> Right i
-    Right (_, r)  -> Left ("leftover input: " ++ r)
+parseInterval s =
+    case runParser (spaces *> iExpr <* spaces) s of
+        Left err      -> Left err
+        Right (i, "") -> Right i
+        Right (_, r)  -> Left ("leftover: " ++ r)
 
 iExpr :: Parser I
 iExpr = iJoin
@@ -156,89 +120,79 @@ iExpr = iJoin
 iJoin :: Parser I
 iJoin = do
     l <- iMeet
-    rest l
+    go l
   where
-    rest acc = do
-        mj <- try (symbol "\8744")   -- ∨
-        case mj of
+    go acc = do
+        mv <- try (symbol "\8744")   -- ∨
+        case mv of
             Nothing -> return acc
-            Just () -> do
-                r <- iMeet
-                rest (Join acc r)
+            Just () -> iMeet >>= \r -> go (Join acc r)
 
 iMeet :: Parser I
 iMeet = do
     l <- iNeg
-    rest l
+    go l
   where
-    rest acc = do
-        mj <- try (symbol "\8743")   -- ∧
-        case mj of
+    go acc = do
+        mv <- try (symbol "\8743")   -- ∧
+        case mv of
             Nothing -> return acc
-            Just () -> do
-                r <- iNeg
-                rest (Meet acc r)
+            Just () -> iNeg >>= \r -> go (Meet acc r)
 
 iNeg :: Parser I
-iNeg =
-    (symbol "\172" *> fmap Neg iNeg)   -- ¬ = \172
+iNeg = (symbol "\172" *> fmap Neg iNeg)   -- ¬
     <|> iAtom
 
 iAtom :: Parser I
-iAtom =
-    (symbol "0" *> return I0)
-    <|> (symbol "1" *> return I1)
-    <|> iVar
-    <|> parens iExpr
+iAtom = (symbol "0" *> return I0)
+     <|> (symbol "1" *> return I1)
+     <|> iVar
+     <|> parens iExpr
   where
-    -- Match  i<nat>  as IVar n
     iVar = lexeme $ Parser $ \s ->
-        case dropWhile isSpace s of
+        case s of
             ('i':rest) -> case span isDigit rest of
                 (ds@(_:_), remaining) -> Right (IVar (read ds), remaining)
-                _                     -> Left "expected interval variable i<n>"
+                _                     -> Left "expected i<n>"
             _ -> Left "expected interval variable"
 
 --------------------------------------------------------------------------------
--- Term Parser
+-- Term parser
 --------------------------------------------------------------------------------
 
--- | Parse a closed term (no free names).
 parseTerm :: String -> Either ParseError Term
-parseTerm s = case runParser (spaces *> termWith []) s of
-    Left err      -> Left err
-    Right (t, "") -> Right t
-    Right (_, r)  -> Left ("leftover input: " ++ r)
+parseTerm s =
+    case runParser (spaces *> termWith [] <* spaces) s of
+        Left err      -> Left err
+        Right (t, "") -> Right t
+        Right (_, r)  -> Left ("leftover: " ++ r)
 
--- | Main entry: parse a term given a name environment.
+-- term  ::=  lam | plam | pi | app
 termWith :: Env -> Parser Term
-termWith env = lamTerm env <|> piTerm env <|> appTerm env
+termWith env = lamP env <|> plamP env <|> piP env <|> appP env
 
--- | λx. body  or  ⟨x⟩ body
-lamTerm :: Env -> Parser Term
-lamTerm env =
-    parseLam env <|> parsePLam env
-
-parseLam :: Env -> Parser Term
-parseLam env = do
+-- λx. body
+lamP :: Env -> Parser Term
+lamP env = do
     symbol "\955"   -- λ
-    x <- name
+    x    <- name
     symbol "."
     body <- termWith (x : env)
     return (TAbs x body)
 
-parsePLam :: Env -> Parser Term
-parsePLam env = do
-    x <- angles name
+-- ⟨x⟩ body
+plamP :: Env -> Parser Term
+plamP env = do
+    x    <- angles name
     body <- termWith (x : env)
     return (PLam x body)
 
--- | Π(x:A). B
-piTerm :: Env -> Parser Term
-piTerm env = do
+-- Π(x:A). B
+piP :: Env -> Parser Term
+piP env = do
     symbol "\928"   -- Π
     symbol "("
-    x <- name
+    x   <- name
     symbol ":"
     aTy <- termWith env
     symbol ")"
@@ -246,119 +200,145 @@ piTerm env = do
     bTy <- termWith (x : env)
     return (TPi x aTy bTy)
 
--- | Function application and path application, left-associative.
---   Also handles  t @ r  for path application.
-appTerm :: Env -> Parser Term
-appTerm env = do
-    f <- atom env
-    rest f
+-- Left-associative application chain; also handles  t @ r  (path app).
+appP :: Env -> Parser Term
+appP env = do
+    f <- atomP env
+    go f
   where
-    rest acc = do
-        -- try path application  acc @ r
-        mpapp <- try (symbol "@")
-        case mpapp of
-            Just () -> do
-                r <- atom env
-                rest (PApp acc r)
+    go acc = do
+        mpat <- try (symbol "@")
+        case mpat of
+            Just () -> atomP env >>= \r -> go (PApp acc r)
             Nothing -> do
-                -- try normal application: another atom follows
-                marg <- try (atom env)
+                marg <- try (atomP env)
                 case marg of
                     Nothing  -> return acc
-                    Just arg -> rest (TApp acc arg)
+                    Just arg -> go (TApp acc arg)
 
--- | Atomic terms (no leading lambda/Pi).
-atom :: Env -> Parser Term
-atom env =
-    parseUniv
-    <|> parseIntervalTy
-    <|> parsePathTy env
-    <|> parseHComp env
-    <|> parseGlue env
-    <|> parseGlueElem env
-    <|> parseUnglue env
-    <|> parseInterval_ env
-    <|> parseVar env
-    <|> parens (termWith env)
+-- ── atomP ─────────────────────────────────────────────────────────────────────
+-- An atom is anything that can appear as a function/argument without extra
+-- parens.  Critically, pathP / hcompP / glueTypeP / glueElemP / unglueP are
+-- NOT atoms — they take multiple arguments and must be wrapped in parens when
+-- used as an argument to something else.
+--
+--   atom  ::=  U<n> | 𝕀 | hcomp… | Glue… | glue… | unglue… | Path…
+--            | i<n> | 0 | 1 | <name> | '(' term ')'
+--
+-- The multi-arg forms ARE atoms at the top level of appP (they appear as the
+-- head), but when they appear as arguments inside another term they must be
+-- parenthesised.  We handle this by letting appP call atomP for each spine
+-- element; inside parens the full termWith is used so a parenthesised Path/
+-- hcomp/etc. parses correctly.
+-- ──────────────────────────────────────────────────────────────────────────────
+atomP :: Env -> Parser Term
+atomP env
+     =  univP
+    <|> intervalTyP
+    <|> intervalLitP           -- i<n>, 0, 1  — must come before varP
+    <|> hcompP  env            -- keyword-headed, safe to try
+    <|> glueTypeP env
+    <|> glueElemP env
+    <|> unglueP env
+    <|> pathP env
+    <|> varP env               -- plain identifier last
+    <|> parens (termWith env)  -- parenthesised sub-term (full grammar inside)
 
--- | U<n>
-parseUniv :: Parser Term
-parseUniv = lexeme $ Parser $ \s ->
-    case dropWhile isSpace s of
+-- U<n>
+univP :: Parser Term
+univP = lexeme $ Parser $ \s ->
+    case s of
         ('U':rest) -> case span isDigit rest of
-            (ds@(_:_), remaining) -> Right (TUniv (read ds), remaining)
-            _                     -> Left "expected universe U<n>"
+            (ds@(_:_), rem) -> Right (TUniv (read ds), rem)
+            _               -> Left "expected U<n>"
         _ -> Left "expected universe"
 
--- | 𝕀  (the interval pseudo-type)
-parseIntervalTy :: Parser Term
-parseIntervalTy = symbol "\120128" *> return TIntervalTy  -- 𝕀 = \120128
+-- 𝕀
+intervalTyP :: Parser Term
+intervalTyP = symbol "\120128" *> return TIntervalTy
 
--- | Path A u v
-parsePathTy :: Env -> Parser Term
-parsePathTy env = do
+-- i<n> | 0 | 1  in term position
+-- Must NOT swallow a name like "if": only matches i followed by digits,
+-- or a bare 0/1 not followed by more digits/letters.
+-- | Returns True if the character cannot continue an identifier.
+notIdentChar :: Char -> Bool
+notIdentChar c = not (isAlphaNum c || c == '_' || c == '\'')
+
+-- | True if the string is empty or starts with a non-identifier character.
+notIdentCont :: String -> Bool
+notIdentCont []    = True
+notIdentCont (c:_) = notIdentChar c
+
+intervalLitP :: Parser Term
+intervalLitP = fmap TInterval $ lexeme $ Parser $ \s ->
+    case s of
+        ('i':rest) -> case span isDigit rest of
+            (ds@(_:_), rem) | notIdentCont rem
+                -> Right (IVar (read ds), rem)
+            _   -> Left "not an interval literal"
+        ('0':rest) | notIdentCont rest -> Right (I0, rest)
+        ('1':rest) | notIdentCont rest -> Right (I1, rest)
+        _          -> Left "not an interval literal"
+
+-- Path A u v
+-- A, u, v are each atoms (use parens for compound arguments).
+pathP :: Env -> Parser Term
+pathP env = do
     keyword "Path"
-    a <- atom env
-    u <- atom env
-    v <- atom env
+    a <- atomP env
+    u <- atomP env
+    v <- atomP env
     return (TPath a u v)
 
--- | hcomp A [phi] (u) u0
-parseHComp :: Env -> Parser Term
-parseHComp env = do
+-- hcomp A [φ] u u0
+-- u may be a bare ⟨x⟩ body (PLam), a parenthesised term, or an atom.
+-- When bare, the body is a single atomP to avoid greedily consuming u0.
+hcompP :: Env -> Parser Term
+hcompP env = do
     keyword "hcomp"
-    a   <- atom env
+    a   <- atomP env
     phi <- brackets (termWith env)
-    u   <- parens (termWith env)
-    u0  <- atom env
+    u   <- plamAtomP env <|> parens (termWith env) <|> atomP env
+    u0  <- atomP env
     return (THComp a phi u u0)
 
--- | Glue A [phi] (te)
-parseGlue :: Env -> Parser Term
-parseGlue env = do
+-- PLam with atom body (prevents eating u0 when used bare inside hcomp).
+plamAtomP :: Env -> Parser Term
+plamAtomP env = do
+    x    <- angles name
+    body <- atomP (x : env)
+    return (PLam x body)
+
+-- Glue A [φ] te
+glueTypeP :: Env -> Parser Term
+glueTypeP env = do
     keyword "Glue"
-    a   <- atom env
+    a   <- atomP env
     phi <- brackets (termWith env)
-    te  <- parens (termWith env)
+    te  <- parens (termWith env) <|> atomP env
     return (TGlue a phi te)
 
--- | glue [phi] (t) a
-parseGlueElem :: Env -> Parser Term
-parseGlueElem env = do
+-- glue [φ] t a
+glueElemP :: Env -> Parser Term
+glueElemP env = do
     keyword "glue"
     phi <- brackets (termWith env)
-    t   <- parens (termWith env)
-    a   <- atom env
+    t   <- parens (termWith env) <|> atomP env
+    a   <- atomP env
     return (TGlueElem phi t a)
 
--- | unglue [phi] (te) g
-parseUnglue :: Env -> Parser Term
-parseUnglue env = do
+-- unglue [φ] te g
+unglueP :: Env -> Parser Term
+unglueP env = do
     keyword "unglue"
     phi <- brackets (termWith env)
-    te  <- parens (termWith env)
-    g   <- atom env
+    te  <- parens (termWith env) <|> atomP env
+    g   <- atomP env
     return (TUnglue phi te g)
 
--- | An interval literal inline in a term position: 0, 1, i<n>.
---   These become TInterval nodes.
-parseInterval_ :: Env -> Parser Term
-parseInterval_ _env =
-    fmap TInterval $ lexeme $
-        (char '0' *> return I0)
-        <|> (char '1' *> return I1)
-        <|> iVarOnly
-  where
-    iVarOnly = Parser $ \s ->
-        case dropWhile isSpace s of
-            ('i':rest) -> case span isDigit rest of
-                (ds@(_:_), remaining) -> Right (IVar (read ds), remaining)
-                _                     -> Left "not an interval var"
-            _ -> Left "not an interval"
-
--- | Variable: resolve a name against the environment to get a de Bruijn index.
-parseVar :: Env -> Parser Term
-parseVar env = do
+-- named variable → de Bruijn index
+varP :: Env -> Parser Term
+varP env = do
     x <- name
     case lookup x (zip env [0..]) of
         Just i  -> return (TVar i)
