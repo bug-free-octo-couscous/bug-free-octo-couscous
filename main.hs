@@ -7,7 +7,7 @@ import qualified Data.Set as Set
 import Data.List (intercalate)
 
 --------------------------------------------------------------------------------
--- 1. Interval Syntax & DNF
+-- Interval Syntax & DNF
 --------------------------------------------------------------------------------
 
 data I
@@ -57,7 +57,7 @@ instance Show DNF where
 -- show DNF
 
 --------------------------------------------------------------------------------
--- 2. Cubical Dependent Syntax
+-- Cubical Dependent Syntax
 --------------------------------------------------------------------------------
 
 type Name  = String
@@ -166,7 +166,7 @@ instance Show Term where
 -- show Term
 
 --------------------------------------------------------------------------------
--- 3. Evaluation & Substitution
+-- Evaluation & Substitution
 --------------------------------------------------------------------------------
 
 -- | Capture-avoiding substitution: t[x := s]
@@ -284,7 +284,7 @@ eval t = case t of
 
 
 --------------------------------------------------------------------------------
--- 4. Interval Algebra
+-- Interval Algebra
 --------------------------------------------------------------------------------
 
 simplify :: Set (Set Literal) -> Set (Set Literal)
@@ -321,52 +321,7 @@ dnfNeg (DNF cubes)
     negLit (NegVar n) = Pos n
 
 --------------------------------------------------------------------------------
--- 5. Demonstration (Evaluation)
---------------------------------------------------------------------------------
-
-demoEval :: IO ()
-demoEval = do
-    putStrLn "=== Cubical Lambda Calculus with Path Types ==="
-
-    -- 1. Identity function (Standard Pi Type)
-    let idType = TPi "A" (TUniv 0) (TPi "x" (TVar "A") (TVar "A"))
-    let idTerm = TAbs "A" (TAbs "x" (TVar "x"))
-
-    putStrLn $ "\nIdentity Type: " ++ show idType
-    putStrLn $ "Identity Term: " ++ show idTerm
-
-    -- 2. Reflexivity (Path Type)
-    -- refl : Π(A:U0). Π(x:A). Path A x x
-    -- refl = λA. λx. ⟨i⟩ x
-    let refl = TAbs "A" (TAbs "x" (PLam "i" (TVar "x")))
-    putStrLn $ "\nReflexivity (refl): " ++ show refl
-
-    -- 3. Path Application
-    -- Applying refl to a type and term, then applying an interval
-    -- (refl U0 T) @ 0
-    let testPath = PApp (TApp (TApp refl (TUniv 0)) (TVar "T")) (TInterval I0)
-    putStrLn $ "\nEvaluating (refl U0 T) @ 0:"
-    putStrLn $ "Result: " ++ show (eval testPath)
-
-    -- 4. De Morgan in the Interval (Normalized inside a Path)
-    let deMorganLHS = Neg (Join (IVar 0) (IVar 1))
-    let deMorganRHS = Meet (Neg (IVar 0)) (Neg (IVar 1))
-    let pathDeMorgan = TPath (TUniv 0) (TInterval deMorganLHS) (TInterval deMorganRHS)
-
-    putStrLn $ "\nNormalized De Morgan Interval in Type:"
-    putStrLn $ "Raw:        " ++ show pathDeMorgan
-    putStrLn $ "Normalized: " ++ show (eval pathDeMorgan)
-
-    -- 5. Symmetry (Function that flips a path)
-    -- sym : Π(A:U0). Π(x y: A). Path A x y -> Path A y x
-    -- sym = λA. λx. λy. λp. ⟨i⟩ p @ ¬i
-    let sym = TAbs "A" (TAbs "x" (TAbs "y"
-                (TAbs "p" (PLam "i"
-                    (PApp (TVar "p") (TInterval (Neg (IVar 0))))))))
-    putStrLn $ "\nSymmetry term: " ++ show sym
-
---------------------------------------------------------------------------------
--- 6. Bidirectional Type Checker
+-- Bidirectional Type Checker
 --------------------------------------------------------------------------------
 
 -- | The interval pseudo-type. Interval expressions (𝕀) live outside the
@@ -378,7 +333,7 @@ intervalTy = TVar "𝕀"
 type Ctx = [(Name, Term)]
 
 -- ---------------------------------------------------------------------------
--- 6a. Type Errors
+-- Type Errors
 -- ---------------------------------------------------------------------------
 
 data TypeError
@@ -414,7 +369,7 @@ instance Show TypeError where
             "  " ++ msg
 
 -- ---------------------------------------------------------------------------
--- 6b. Context Helpers
+-- Context Helpers
 -- ---------------------------------------------------------------------------
 
 extendCtx :: Name -> Term -> Ctx -> Ctx
@@ -444,7 +399,7 @@ requireUniverse ctx t = do
         other   -> Left (ExpectedUniverse other)
 
 -- ---------------------------------------------------------------------------
--- 6c. Interval Validity
+-- Interval Validity
 -- ---------------------------------------------------------------------------
 
 -- | Assert that a term is an interval expression.
@@ -460,7 +415,7 @@ checkInterval ctx t = do
         else Left (NotAnInterval t)
 
 -- ---------------------------------------------------------------------------
--- 6d. Type Inference  (Γ ⊢ t ⇒ T)
+-- Type Inference  (Γ ⊢ t ⇒ T)
 -- ---------------------------------------------------------------------------
 
 -- | Synthesize the type of @t@ in context @ctx@.
@@ -586,7 +541,7 @@ infer ctx (THComp aTy phi tube base) = do
     return aTy'
 
 -- ---------------------------------------------------------------------------
--- 6e. Type Checking  (Γ ⊢ t ⇐ T)
+-- Type Checking  (Γ ⊢ t ⇐ T)
 -- ---------------------------------------------------------------------------
 
 -- | Verify that @t@ has type @ty@ in context @ctx@.
@@ -677,8 +632,21 @@ reportCheck label t ty =
         Left err ->
             putStrLn $ "  ✗  " ++ label ++ "\n" ++ show err
 
+--------------------------------------------------------------------------------
+-- 9. Main
+--------------------------------------------------------------------------------
+
+main :: IO ()
+main = do
+    demoEval
+    demoTypeCheck
+    demoKan
+    demoGlue
+
+-- demos -----------------------------------------------------------------------
+
 -- ---------------------------------------------------------------------------
--- 6g. Type-checker demo
+-- Type-checker demo
 -- ---------------------------------------------------------------------------
 
 demoTypeCheck :: IO ()
@@ -800,7 +768,7 @@ demoTypeCheck = do
         Left err -> putStrLn $ "  ✗  " ++ show err
 
 --------------------------------------------------------------------------------
--- 8. Kan Composition Demo
+-- Kan Composition Demo
 --------------------------------------------------------------------------------
 
 demoKan :: IO ()
@@ -888,18 +856,55 @@ demoKan = do
     putStrLn $ "  trans = " ++ show transTm
     putStrLn $ "  trans : " ++ show transTy
 
+
 --------------------------------------------------------------------------------
--- 9. Main
+-- Eval Demo
 --------------------------------------------------------------------------------
 
-main :: IO ()
-main = do
-    demoEval
-    demoTypeCheck
-    demoKan
-    demoGlue
+demoEval :: IO ()
+demoEval = do
+    putStrLn "=== Cubical Lambda Calculus with Path Types ==="
+
+    -- 1. Identity function (Standard Pi Type)
+    let idType = TPi "A" (TUniv 0) (TPi "x" (TVar "A") (TVar "A"))
+    let idTerm = TAbs "A" (TAbs "x" (TVar "x"))
+
+    putStrLn $ "\nIdentity Type: " ++ show idType
+    putStrLn $ "Identity Term: " ++ show idTerm
+
+    -- 2. Reflexivity (Path Type)
+    -- refl : Π(A:U0). Π(x:A). Path A x x
+    -- refl = λA. λx. ⟨i⟩ x
+    let refl = TAbs "A" (TAbs "x" (PLam "i" (TVar "x")))
+    putStrLn $ "\nReflexivity (refl): " ++ show refl
+
+    -- 3. Path Application
+    -- Applying refl to a type and term, then applying an interval
+    -- (refl U0 T) @ 0
+    let testPath = PApp (TApp (TApp refl (TUniv 0)) (TVar "T")) (TInterval I0)
+    putStrLn $ "\nEvaluating (refl U0 T) @ 0:"
+    putStrLn $ "Result: " ++ show (eval testPath)
+
+    -- 4. De Morgan in the Interval (Normalized inside a Path)
+    let deMorganLHS = Neg (Join (IVar 0) (IVar 1))
+    let deMorganRHS = Meet (Neg (IVar 0)) (Neg (IVar 1))
+    let pathDeMorgan = TPath (TUniv 0) (TInterval deMorganLHS) (TInterval deMorganRHS)
+
+    putStrLn $ "\nNormalized De Morgan Interval in Type:"
+    putStrLn $ "Raw:        " ++ show pathDeMorgan
+    putStrLn $ "Normalized: " ++ show (eval pathDeMorgan)
+
+    -- 5. Symmetry (Function that flips a path)
+    -- sym : Π(A:U0). Π(x y: A). Path A x y -> Path A y x
+    -- sym = λA. λx. λy. λp. ⟨i⟩ p @ ¬i
+    let sym = TAbs "A" (TAbs "x" (TAbs "y"
+                (TAbs "p" (PLam "i"
+                    (PApp (TVar "p") (TInterval (Neg (IVar 0))))))))
+    putStrLn $ "\nSymmetry term: " ++ show sym
+
+
 --------------------------------------------------------------------------------
--- 10. Glue Types Demo
+-- Glue Types Demo
 --------------------------------------------------------------------------------
 
 demoGlue :: IO ()
