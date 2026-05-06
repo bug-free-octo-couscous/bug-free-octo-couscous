@@ -16,8 +16,6 @@ data I
     | Meet I I | Join I I | Neg I
     deriving (Eq, Ord)
 
--- definition type I
-
 instance Show I where
     show I0         = "0"
     show I1         = "1"
@@ -26,22 +24,13 @@ instance Show I where
     show (Join i j) = "(" ++ show i ++ " ∨ " ++ show j ++ ")"
     show (Neg i)    = "¬" ++ show i
 
--- show I
-
 data Literal = Pos Int | NegVar Int deriving (Eq, Ord)
-
--- definition type Literal
 
 instance Show Literal where
     show (Pos n)    = "i" ++ show n
     show (NegVar n) = "¬i" ++ show n
 
--- show Literal
-
 newtype DNF = DNF { getCubes :: Set (Set Literal) } deriving (Eq, Ord)
-
--- definition type DNF light 
--- new type light weight than data
 
 instance Show DNF where
     show (DNF cs)
@@ -54,8 +43,6 @@ instance Show DNF where
                 then "1"
                 else "(" ++ intercalate " ∧ " (map show (Set.toList c)) ++ ")"
 
--- show DNF
-
 --------------------------------------------------------------------------------
 -- Cubical Dependent Syntax
 --------------------------------------------------------------------------------
@@ -63,8 +50,6 @@ instance Show DNF where
 -- We keep Name only for hints shown in pretty-printing; it has no semantic role.
 type Name  = String
 type Level = Int
-
--- alias
 
 -- | De Bruijn representation.
 --
@@ -143,8 +128,6 @@ data Term
     --   unglue ⊤ (T, e) g  ≡  e(g)   (apply the equivalence)
     --   unglue ⊥ _      g  ≡  g      (g already lives in A)
     deriving (Eq)
-
--- definition type Term
 
 -- | Pretty-print a term, recovering readable names from a name-hint stack.
 --   Each binder pushes its hint; TVar i looks up index i in the stack.
