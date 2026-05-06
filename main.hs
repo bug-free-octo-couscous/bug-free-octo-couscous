@@ -60,25 +60,38 @@ instance Show DNF where
 -- Cubical Dependent Syntax
 --------------------------------------------------------------------------------
 
+-- We keep Name only for hints shown in pretty-printing; it has no semantic role.
 type Name  = String
 type Level = Int
 
 -- alias
 
+-- | De Bruijn representation.
+--
+--   Variables are non-negative integers that count the number of binders
+--   between the use site and the binder:
+--
+--     λ. λ. 0      -- the inner λ's own variable
+--     λ. λ. 1      -- the outer λ's variable
+--
+--   Every binder (TAbs, TPi, PLam) carries an optional Name hint purely for
+--   pretty-printing; it is ignored by all semantic operations.
 data Term
-    = TVar Name
+    = TVar Int              -- de Bruijn index
     | TApp Term Term
-    | TAbs Name Term
+    | TAbs Name Term        -- λ(hint). body    — binds de Bruijn 0 in body
     -- Universes
     | TUniv Level           -- U_n
+    -- Interval pseudo-type (𝕀 lives outside the universe hierarchy)
+    | TIntervalTy           -- the "type" of interval expressions
     -- Dependent Types (Pi Types)
-    | TPi Name Term Term    -- Π(x:A). B
+    | TPi Name Term Term    -- Π(hint:A). B     — binds de Bruijn 0 in B
     -- Cubical Additions
     | TInterval I           -- Symbolic Interval
     | TCube DNF             -- Normalized Interval
     -- Path Types
     | TPath Term Term Term  -- Path A u v
-    | PLam Name Term        -- ⟨i⟩ t  (Path abstraction, binds interval name i)
+    | PLam Name Term        -- ⟨hint⟩ t  (Path abstraction, binds interval 0 in t)
     | PApp Term Term        -- t @ r  (Path application)
     -- Kan Composition
     | THComp Term Term Term Term
@@ -133,82 +146,139 @@ data Term
 
 -- definition type Term
 
+-- | Pretty-print a term, recovering readable names from a name-hint stack.
+--   Each binder pushes its hint; TVar i looks up index i in the stack.
+showTerm :: [Name] -> Term -> String
+showTerm env t = case t of
+    TVar i      -> if i < length env then env !! i else "#" ++ show i
+    TApp f a    -> "(" ++ showTerm env f ++ " " ++ showTerm env a ++ ")"
+    TAbs x b    -> "λ" ++ x ++ ". " ++ showTerm (x:env) b
+    TUniv n     -> "U" ++ show n
+    TIntervalTy -> "𝕀"
+    TPi x a b   -> "Π(" ++ x ++ ":" ++ showTerm env a ++ "). " ++ showTerm (x:env) b
+    TInterval i -> show i
+    TCube c     -> show c
+    TPath a u v -> "Path " ++ showTerm env a ++ " " ++ showTerm env u ++ " " ++ showTerm env v
+    PLam i b    -> "⟨" ++ i ++ "⟩ " ++ showTerm (i:env) b
+    PApp p r    -> showTerm env p ++ " @ " ++ showTerm env r
+    THComp a phi u u0 ->
+        "hcomp " ++ showTerm env a
+        ++ " [" ++ showTerm env phi ++ "] "
+        ++ "(" ++ showTerm env u ++ ") "
+        ++ showTerm env u0
+    TGlue a phi te ->
+        "Glue " ++ showTerm env a
+        ++ " [" ++ showTerm env phi ++ "] "
+        ++ "(" ++ showTerm env te ++ ")"
+    TGlueElem phi t a ->
+        "glue [" ++ showTerm env phi ++ "] "
+        ++ "(" ++ showTerm env t ++ ") "
+        ++ showTerm env a
+    TUnglue phi te g ->
+        "unglue [" ++ showTerm env phi ++ "] "
+        ++ "(" ++ showTerm env te ++ ") "
+        ++ showTerm env g
+
 instance Show Term where
-    show t = case t of
-        TVar x      -> x
-        TApp f a    -> "(" ++ show f ++ " " ++ show a ++ ")"
-        TAbs x b    -> "λ" ++ x ++ ". " ++ show b
-        TUniv n     -> "U" ++ show n
-        TPi x a b   -> "Π(" ++ x ++ ":" ++ show a ++ "). " ++ show b
-        TInterval i -> show i
-        TCube c     -> show c
-        TPath a u v -> "Path " ++ show a ++ " " ++ show u ++ " " ++ show v
-        PLam i t    -> "⟨" ++ i ++ "⟩ " ++ show t
-        PApp t r    -> show t ++ " @ " ++ show r
-        THComp a phi u u0 ->
-            "hcomp " ++ show a
-            ++ " [" ++ show phi ++ "] "
-            ++ "(" ++ show u ++ ") "
-            ++ show u0
-        TGlue a phi te ->
-            "Glue " ++ show a
-            ++ " [" ++ show phi ++ "] "
-            ++ "(" ++ show te ++ ")"
-        TGlueElem phi t a ->
-            "glue [" ++ show phi ++ "] "
-            ++ "(" ++ show t ++ ") "
-            ++ show a
-        TUnglue phi te g ->
-            "unglue [" ++ show phi ++ "] "
-            ++ "(" ++ show te ++ ") "
-            ++ show g
-
--- show Term
+    show = showTerm []
 
 --------------------------------------------------------------------------------
--- Evaluation & Substitution
+-- Evaluation & Substitution  (de Bruijn)
 --------------------------------------------------------------------------------
 
--- | Capture-avoiding substitution: t[x := s]
-subst :: Name -> Term -> Term -> Term
-subst x s term = case term of
-    TVar y      | x == y    -> s
-                | otherwise -> TVar y
-    TApp f a                -> TApp (subst x s f) (subst x s a)
-    TAbs y b    | x == y    -> TAbs y b
-                | otherwise -> TAbs y (subst x s b)
-    TPi y a b   | x == y    -> TPi y (subst x s a) b
-                | otherwise -> TPi y (subst x s a) (subst x s b)
-    TUniv n                 -> TUniv n
-    TInterval i             -> TInterval i
-    TCube c                 -> TCube c
-    TPath a u v             -> TPath (subst x s a) (subst x s u) (subst x s v)
-    PLam i t    | x == i    -> PLam i t
-                | otherwise -> PLam i (subst x s t)
-    PApp t r                -> PApp (subst x s t) (subst x s r)
-    THComp a phi u u0       ->
-        THComp (subst x s a) (subst x s phi) (subst x s u) (subst x s u0)
-    TGlue a phi te          ->
-        TGlue (subst x s a) (subst x s phi) (subst x s te)
-    TGlueElem phi t a       ->
-        TGlueElem (subst x s phi) (subst x s t) (subst x s a)
-    TUnglue phi te g        ->
-        TUnglue (subst x s phi) (subst x s te) (subst x s g)
+-- | @shift d c t@ increments every free variable in @t@ whose index is ≥ @c@
+--   by @d@.  This is the standard "lifting" operation needed to slide a term
+--   under a new binder without accidentally capturing free variables.
+--
+--   * @d@  — the increment (usually +1 when going under one new binder)
+--   * @c@  — the cutoff: indices below @c@ are bound by binders already
+--             counted in the current context, so they must not be touched
+shift :: Int -> Int -> Term -> Term
+shift d c term = case term of
+    TVar i      -> TVar (if i >= c then i + d else i)
+    TApp f a    -> TApp (shift d c f) (shift d c a)
+    -- Binders increase the cutoff by 1 for their sub-term
+    TAbs x b    -> TAbs x (shift d (c+1) b)
+    TPi x a b   -> TPi x (shift d c a) (shift d (c+1) b)
+    TUniv n     -> TUniv n
+    TIntervalTy -> TIntervalTy
+    TInterval i -> TInterval i
+    TCube cu    -> TCube cu
+    TPath a u v -> TPath (shift d c a) (shift d c u) (shift d c v)
+    PLam x b    -> PLam x (shift d (c+1) b)
+    PApp p r    -> PApp (shift d c p) (shift d c r)
+    THComp a phi u u0 ->
+        THComp (shift d c a) (shift d c phi) (shift d c u) (shift d c u0)
+    TGlue a phi te ->
+        TGlue (shift d c a) (shift d c phi) (shift d c te)
+    TGlueElem phi t a ->
+        TGlueElem (shift d c phi) (shift d c t) (shift d c a)
+    TUnglue phi te g ->
+        TUnglue (shift d c phi) (shift d c te) (shift d c g)
 
--- need update to make it use de bruijin index
+-- | @subst j s t@ replaces every free occurrence of de Bruijn index @j@ in
+--   @t@ with the term @s@, properly adjusting indices so that no variable
+--   capture can occur.
+--
+--   The standard single-step recipe for going under a binder is:
+--
+--   1. Increment all free variables of @s@ by 1 (shift by 1 at cutoff 0),
+--      so that @s@'s own free variables skip over the new binder.
+--   2. Recurse with @j+1@ as the target index.
+--
+--   After the whole substitution the binder itself disappears, so every
+--   remaining free variable ≥ j must be decremented by 1 — this is handled
+--   by the @shift (-1) j@ call after eliminating the outermost binder (see
+--   @beta@ below).
+subst :: Int -> Term -> Term -> Term
+subst j s term = case term of
+    TVar i
+        | i == j    -> s
+        | otherwise -> TVar i
+    TApp f a    -> TApp (subst j s f) (subst j s a)
+    -- Going under a binder: lift s over the new binder; target index += 1
+    TAbs x b    -> TAbs x (subst (j+1) (shift 1 0 s) b)
+    TPi x a b   -> TPi x (subst j s a) (subst (j+1) (shift 1 0 s) b)
+    TUniv n     -> TUniv n
+    TIntervalTy -> TIntervalTy
+    TInterval i -> TInterval i
+    TCube cu    -> TCube cu
+    TPath a u v -> TPath (subst j s a) (subst j s u) (subst j s v)
+    PLam x b    -> PLam x (subst (j+1) (shift 1 0 s) b)
+    PApp p r    -> PApp (subst j s p) (subst j s r)
+    THComp a phi u u0 ->
+        THComp (subst j s a) (subst j s phi) (subst j s u) (subst j s u0)
+    TGlue a phi te ->
+        TGlue (subst j s a) (subst j s phi) (subst j s te)
+    TGlueElem phi t a ->
+        TGlueElem (subst j s phi) (subst j s t) (subst j s a)
+    TUnglue phi te g ->
+        TUnglue (subst j s phi) (subst j s te) (subst j s g)
+
+-- | β-reduce a redex: given the body of a binder and the argument,
+--   substitute de Bruijn 0 with the argument and then lower all remaining
+--   free indices by 1 (since the binder has been consumed).
+--
+--   @beta body arg = shift (-1) 0 (subst 0 (shift 1 0 arg) body)@
+--
+--   The inner @shift 1 0 arg@ protects @arg@'s free variables while it
+--   travels under the (now-about-to-disappear) binder; the outer
+--   @shift (-1) 0@ removes the slot left by the consumed binder.
+beta :: Term -> Term -> Term
+beta body arg = shift (-1) 0 (subst 0 (shift 1 0 arg) body)
 
 -- | Normalizes terms to Normal Form
 eval :: Term -> Term
 eval t = case t of
     TApp f a ->
         case eval f of
-            TAbs x body -> eval (subst x (eval a) body)
+            TAbs _ body -> eval (beta body (eval a))
             f'          -> TApp f' (eval a)
 
     -- Path Beta-reduction: (⟨i⟩ t) @ r  ==>  t[i := r]
     PApp t r ->
         case eval t of
-            PLam i body -> eval (subst i (eval r) body)
+            PLam _ body -> eval (beta body (eval r))
             t'          -> PApp t' (eval r)
 
     TAbs x b    -> TAbs x (eval b)
@@ -228,7 +298,7 @@ eval t = case t of
         in if isTop
            -- β-rule (⊤): hcomp A ⊤ (⟨i⟩ t) u₀  ≡  t[i := 1]
            then case eval tube of
-                    PLam i body -> eval (subst i (TInterval I1) body)
+                    PLam _ body -> eval (beta body (TInterval I1))
                     tube'       -> PApp tube' (TInterval I1)
            else if isBot
            -- β-rule (⊥): hcomp A ⊥ u u₀  ≡  u₀
@@ -324,12 +394,17 @@ dnfNeg (DNF cubes)
 -- Bidirectional Type Checker
 --------------------------------------------------------------------------------
 
--- | The interval pseudo-type. Interval expressions (𝕀) live outside the
---   universe hierarchy; we represent their "type" with this sentinel.
+-- | The interval pseudo-type sentinel. Used as the stored type for interval
+--   variables in the context (introduced by PLam and checkInterval).
 intervalTy :: Term
-intervalTy = TVar "𝕀"
+intervalTy = TIntervalTy
 
--- | Typing context: an ordered list of (Name, Type) bindings.
+-- | Typing context: a stack of (hint-name, type) pairs.
+--   The head of the list is the most-recently-bound variable (de Bruijn 0).
+--   Looking up de Bruijn index i retrieves element i from the head.
+--   Types stored in the context are already shifted to be valid at the
+--   depth where they were introduced; when we retrieve a type at depth d
+--   we must shift it by d to be valid at the use site.
 type Ctx = [(Name, Term)]
 
 -- ---------------------------------------------------------------------------
@@ -372,14 +447,21 @@ instance Show TypeError where
 -- Context Helpers
 -- ---------------------------------------------------------------------------
 
+-- | Extend the context with a new binding (push onto the stack).
+--   The new binding becomes de Bruijn index 0; all existing indices shift up.
 extendCtx :: Name -> Term -> Ctx -> Ctx
 extendCtx x ty ctx = (x, ty) : ctx
 
-lookupCtx :: Name -> Ctx -> Either TypeError Term
-lookupCtx x []            = Left (UnboundVariable x)
-lookupCtx x ((y, ty):rest)
-    | x == y    = Right ty
-    | otherwise = lookupCtx x rest
+-- | Look up de Bruijn index @i@ in the context.
+--   The type is stored at the depth it was introduced; we shift it by @i+1@
+--   so that its own free variables refer correctly to the current depth.
+lookupCtx :: Int -> Ctx -> Either TypeError Term
+lookupCtx i ctx
+    | i < 0 || i >= length ctx =
+        Left (UnboundVariable ("#" ++ show i))
+    | otherwise =
+        let (_, ty) = ctx !! i
+        in Right (shift (i + 1) 0 ty)
 
 -- | Definitional equality: normalize both sides and compare.
 definitionallyEqual :: Term -> Term -> Bool
@@ -423,10 +505,10 @@ checkInterval ctx t = do
 infer :: Ctx -> Term -> Either TypeError Term
 
 -- ─── Variable ───────────────────────────────────────────────────────────────
--- Γ(x) = T
+-- Γ(i) = T
 -- ──────────────
---  Γ ⊢ x ⇒ T
-infer ctx (TVar x) = lookupCtx x ctx
+--  Γ ⊢ i ⇒ T
+infer ctx (TVar i) = lookupCtx i ctx
 
 -- ─── Universe ───────────────────────────────────────────────────────────────
 --  Γ ⊢ U_n ⇒ U_{n+1}
@@ -435,19 +517,20 @@ infer _   (TUniv n) = Right (TUniv (n + 1))
 -- ─── Application ────────────────────────────────────────────────────────────
 -- Γ ⊢ f ⇒ Π(x:A).B    Γ ⊢ a ⇐ A
 -- ─────────────────────────────────
---      Γ ⊢ f a ⇒ B[x:=a]
+--      Γ ⊢ f a ⇒ B[0:=a]
 infer ctx (TApp f a) = do
     fTy <- infer ctx f
     case eval fTy of
-        TPi x aTy bTy -> do
+        TPi _ aTy bTy -> do
             check ctx a aTy
-            return $ eval (subst x a bTy)
+            -- Substitute the argument for the bound variable (de Bruijn 0) in B
+            return $ eval (beta bTy a)
         other -> Left (ExpectedPi other)
 
 -- ─── Π Formation ────────────────────────────────────────────────────────────
--- Γ ⊢ A ⇒ U_i    Γ, x:A ⊢ B ⇒ U_j
+-- Γ ⊢ A ⇒ U_i    Γ, _:A ⊢ B ⇒ U_j
 -- ───────────────────────────────────
---    Γ ⊢ Π(x:A).B ⇒ U_{max i j}
+--    Γ ⊢ Π(_:A).B ⇒ U_{max i j}
 infer ctx (TPi x aTy bTy) = do
     i <- requireUniverse ctx aTy
     j <- requireUniverse (extendCtx x (eval aTy) ctx) bTy
@@ -478,8 +561,11 @@ infer ctx (PApp p r) = do
 
 -- ─── Interval pseudo-types ──────────────────────────────────────────────────
 --  Interval expressions inhabit the pseudo-type 𝕀 (outside universe hierarchy)
-infer _   (TInterval _) = Right intervalTy
-infer _   (TCube _)     = Right intervalTy
+infer _   (TInterval _)  = Right intervalTy
+infer _   (TCube _)      = Right intervalTy
+-- 𝕀 itself is a pseudo-kind; we return it as its own "type" so that
+-- checkInterval can compare against intervalTy without hitting an error.
+infer _   TIntervalTy    = Right TIntervalTy
 
 -- ─── Introduction forms require a known type ────────────────────────────────
 infer _   t@(TAbs _ _) = Left (CannotInfer t)
@@ -548,38 +634,32 @@ infer ctx (THComp aTy phi tube base) = do
 check :: Ctx -> Term -> Term -> Either TypeError ()
 
 -- ─── Lambda Introduction ─────────────────────────────────────────────────────
--- Γ, x:A ⊢ b ⇐ B[y:=x]
--- ──────────────────────────────────────
--- Γ ⊢ λx.b ⇐ Π(y:A).B
+-- Γ, _:A ⊢ b ⇐ B
+-- ──────────────────────────
+-- Γ ⊢ λ_.b ⇐ Π(_:A).B
 --
--- The body binder x may differ from the Pi binder y; we rename B accordingly.
+-- In de Bruijn style both binders introduce index 0; no renaming is needed.
 check ctx (TAbs x body) ty =
     case eval ty of
-        TPi y aTy bTy -> do
+        TPi _ aTy bTy -> do
             let aTy' = eval aTy
-            -- Rename Pi binder to match lambda binder
-            let bTy' = if x == y then bTy else eval (subst y (TVar x) bTy)
-            check (extendCtx x aTy' ctx) body bTy'
+            check (extendCtx x aTy' ctx) body bTy
         other -> Left (ExpectedPi other)
 
 -- ─── Path Introduction ────────────────────────────────────────────────────────
--- Γ, i:𝕀 ⊢ body ⇐ A    body[i:=0] ≡ u    body[i:=1] ≡ v
+-- Γ, _:𝕀 ⊢ body ⇐ A    body[0:=0] ≡ u    body[0:=1] ≡ v
 -- ────────────────────────────────────────────────────────
---            Γ ⊢ ⟨i⟩ body ⇐ Path A u v
---
--- We check:
---   (1) the body under the interval variable has the right type, and
---   (2) the two endpoints (boundary conditions) match u and v definitionally.
+--            Γ ⊢ ⟨_⟩ body ⇐ Path A u v
 check ctx (PLam i body) ty =
     case eval ty of
         TPath aTy u v -> do
             let aTy' = eval aTy
-            -- Boundary check: body[i:=0] ≡ u
-            let bodyAt0 = eval (subst i (TInterval I0) body)
-            let bodyAt1 = eval (subst i (TInterval I1) body)
+            -- Boundary check using beta-substitution of endpoints
+            let bodyAt0 = eval (beta body (TInterval I0))
+            let bodyAt1 = eval (beta body (TInterval I1))
             requireEqual (eval u) bodyAt0
             requireEqual (eval v) bodyAt1
-            -- Body check: add i as an interval variable to ctx
+            -- Body check: extend context with an interval variable
             check (extendCtx i intervalTy ctx) body aTy'
         other -> Left (ExpectedPath other)
 
@@ -645,6 +725,10 @@ main = do
 
 -- demos -----------------------------------------------------------------------
 
+-- demo has bug or main code has error?
+-- that is the question
+-- gemini says demo has bug 🥳 and main code doesn't have error
+
 --------------------------------------------------------------------------------
 -- Eval Demo
 --------------------------------------------------------------------------------
@@ -654,8 +738,11 @@ demoEval = do
     putStrLn "=== Cubical Lambda Calculus with Path Types ==="
 
     -- 1. Identity function (Standard Pi Type)
-    let idType = TPi "A" (TUniv 0) (TPi "x" (TVar "A") (TVar "A"))
-    let idTerm = TAbs "A" (TAbs "x" (TVar "x"))
+    -- Π(A:U0). Π(x:A). A
+    -- In de Bruijn: outer binder = 1, inner binder = 0
+    let idType = TPi "A" (TUniv 0) (TPi "x" (TVar 0) (TVar 1))
+    -- λA. λx. x  — x is de Bruijn 0
+    let idTerm = TAbs "A" (TAbs "x" (TVar 0))
 
     putStrLn $ "\nIdentity Type: " ++ show idType
     putStrLn $ "Identity Term: " ++ show idTerm
@@ -663,13 +750,14 @@ demoEval = do
     -- 2. Reflexivity (Path Type)
     -- refl : Π(A:U0). Π(x:A). Path A x x
     -- refl = λA. λx. ⟨i⟩ x
-    let refl = TAbs "A" (TAbs "x" (PLam "i" (TVar "x")))
+    -- Indices inside PLam body: x=1 (past PLam binder), A=2
+    let refl = TAbs "A" (TAbs "x" (PLam "i" (TVar 1)))
     putStrLn $ "\nReflexivity (refl): " ++ show refl
 
     -- 3. Path Application
-    -- Applying refl to a type and term, then applying an interval
-    -- (refl U0 T) @ 0
-    let testPath = PApp (TApp (TApp refl (TUniv 0)) (TVar "T")) (TInterval I0)
+    -- (refl U0 T) @ 0  where T is a free variable we put in context
+    -- We use TVar 0 to stand for the free variable T
+    let testPath = PApp (TApp (TApp refl (TUniv 0)) (TVar 0)) (TInterval I0)
     putStrLn $ "\nEvaluating (refl U0 T) @ 0:"
     putStrLn $ "Result: " ++ show (eval testPath)
 
@@ -683,11 +771,16 @@ demoEval = do
     putStrLn $ "Normalized: " ++ show (eval pathDeMorgan)
 
     -- 5. Symmetry (Function that flips a path)
-    -- sym : Π(A:U0). Π(x y: A). Path A x y -> Path A y x
     -- sym = λA. λx. λy. λp. ⟨i⟩ p @ ¬i
+    -- Indices at PLam body depth (4 binders + 1 PLam = depth 5):
+    --   i   = TVar 0  (PLam binder)
+    --   p   = TVar 1  (4th λ)
+    --   y   = TVar 2  (3rd λ)
+    --   x   = TVar 3  (2nd λ)
+    --   A   = TVar 4  (1st λ)
     let sym = TAbs "A" (TAbs "x" (TAbs "y"
                 (TAbs "p" (PLam "i"
-                    (PApp (TVar "p") (TInterval (Neg (IVar 0))))))))
+                    (PApp (TVar 1) (TInterval (Neg (IVar 0))))))))
     putStrLn $ "\nSymmetry term: " ++ show sym
 
 -- ---------------------------------------------------------------------------
@@ -707,67 +800,75 @@ demoTypeCheck = do
     -- ── 2. Identity function ─────────────────────────────────────────────────
     --   id : Π(A:U0). Π(x:A). A
     --   id = λA. λx. x
+    --   De Bruijn:  Π(U0). Π(0). 1    (A is 1 past the x-binder, x is 0)
     putStrLn "\n── Identity Function ───────────────────────────────────────"
-    let idTy = TPi "A" (TUniv 0) (TPi "x" (TVar "A") (TVar "A"))
-    let idTm = TAbs "A" (TAbs "x" (TVar "x"))
+    let idTy = TPi "A" (TUniv 0) (TPi "x" (TVar 0) (TVar 1))
+    let idTm = TAbs "A" (TAbs "x" (TVar 0))
     reportCheck "identity" idTm idTy
 
     -- ── 3. Reflexivity ───────────────────────────────────────────────────────
     --   refl : Π(A:U0). Π(x:A). Path A x x
     --   refl = λA. λx. ⟨i⟩ x
+    --   Inside PLam (depth 3): x = TVar 1, A = TVar 2
     putStrLn "\n── Reflexivity ─────────────────────────────────────────────"
     let reflTy = TPi "A" (TUniv 0)
-                     (TPi "x" (TVar "A")
-                          (TPath (TVar "A") (TVar "x") (TVar "x")))
-    let reflTm = TAbs "A" (TAbs "x" (PLam "i" (TVar "x")))
-    reportCheck "refl" reflTm reflTy
+                     (TPi "x" (TVar 0)
+                          (TPath (TVar 1) (TVar 0) (TVar 0)))
+    let reflTm = TAbs "A" (TAbs "x" (PLam "i" (TVar 1)))
+    reportCheck "refl" reflTm reflTy 
 
     -- ── 4. Function composition ──────────────────────────────────────────────
     --   comp : Π(A B C : U0). (A → B) → (B → C) → A → C
     --   comp = λA B C f g x. g (f x)
+    --   Depth map at body (6 binders):
+    --     x=0, g=1, f=2, C=3, B=4, A=5
     putStrLn "\n── Function Composition ────────────────────────────────────"
     let arr a b = TPi "_" a b       -- non-dependent arrow A → B
+    -- Note: in arr the bound var is unused so we shift:
+    --   A→B at depth d means: Π(_:A). shift 1 0 B  (B's vars don't refer to _)
     let compTy =
-            TPi "A" (TUniv 0) $ TPi "B" (TUniv 0) $ TPi "C" (TUniv 0) $
-            arr (TVar "A") (TVar "B") `arr`
-            (arr (TVar "B") (TVar "C") `arr`
-            arr (TVar "A") (TVar "C"))
+            TPi "A" (TUniv 0) $          -- A=0 inside
+            TPi "B" (TUniv 0) $          -- B=0, A=1
+            TPi "C" (TUniv 0) $          -- C=0, B=1, A=2
+            TPi "f" (TPi "_" (TVar 2) (TVar 2)) $   -- f : A→B  (A=2,B=2 after shift)
+            TPi "g" (TPi "_" (TVar 2) (TVar 2)) $   -- g : B→C
+            TPi "x" (TVar 4) $           -- x : A  (A is now 4 deep)
+            TVar 5                       -- return type C (now at 5)
     let compTm =
             TAbs "A" $ TAbs "B" $ TAbs "C" $
             TAbs "f" $ TAbs "g" $ TAbs "x" $
-            TApp (TVar "g") (TApp (TVar "f") (TVar "x"))
+            TApp (TVar 1) (TApp (TVar 2) (TVar 0))
     reportCheck "compose" compTm compTy
 
-    -- ── 5. Path symmetry ─────────────────────────────────────────────────────
-    --   sym : Π(A:U0). Π(x y:A). Path A x y → Path A y x
-    --
-    --   We check sym with explicit assumptions:
-    --   Assume A:U0, x:A, y:A, p : Path A x y
-    --   Then check that ⟨i⟩(p @ i) would give Path A x x (refl).
-    --   A full sym using ¬i requires IVar to connect to PLam binder i.
-    --
-    --   Here we demonstrate checking ⟨i⟩ x : Path A x x (a constant path)
-    --   in a context with A:U0 and x:A, which is a valid path.
+    -- ── 5. Constant path in context ──────────────────────────────────────────
+    --   In context [x:A, A:U0], check ⟨i⟩ x : Path A x x
+    --   Context stack (index 0 = top):  [("x", TVar 0), ("A", TUniv 0)]
+    --   But we build it with extendCtx so:
+    --     ctx = [("x", TVar 0 shifted), ("A", TUniv 0)]
+    --   We use a direct context list here with pre-shifted types.
+    --   At depth 0: A is index 1, x is index 0.
     putStrLn "\n── Constant Path in Context ────────────────────────────────"
-    let ctxWithAx = [("x", TVar "A"), ("A", TUniv 0)]
-    let constPath = PLam "i" (TVar "x")
-    let constPathTy = TPath (TVar "A") (TVar "x") (TVar "x")
+    let ctxWithAx = [("x", TVar 0), ("A", TUniv 0)]
+      -- x : TVar 0  means "x has type = de Bruijn 0 in the context where x was added"
+      -- After lookupCtx 0 (x) → shift 1 0 (TVar 0) = TVar 1, which is A. Correct.
+    -- ⟨i⟩ x  where x is de Bruijn 1 inside PLam (0=i, 1=x, 2=A)
+    let constPath   = PLam "i" (TVar 1)
+    -- Path A x x  where A=TVar 1, x=TVar 0 (at outer depth, ctx has 2 entries)
+    let constPathTy = TPath (TVar 1) (TVar 0) (TVar 0)
     case check ctxWithAx constPath constPathTy of
         Right () -> putStrLn $
             "  ✓  ⟨i⟩ x : Path A x x   (in context A:U0, x:A)"
         Left err -> putStrLn $ "  ✗  " ++ show err
 
     -- ── 6. Path application ───────────────────────────────────────────────────
-    --   p : Path U0 T T  (assumed in context)
+    --   ctx: [("p", Path U1 (TVar 1) (TVar 1)), ("T", TUniv 0)]
     --   p @ 0  and  p @ 1  both have type U0.
-    --
-    --   Note: PLam is an introduction form and needs a known type (check),
-    --   so we demonstrate PApp using an assumed path variable in context.
     putStrLn "\n── Path Application ────────────────────────────────────────"
-    let ctxP = [ ("T", TUniv 0)
-               , ("p", TPath (TUniv 0) (TVar "T") (TVar "T")) ]
-    let app0 = PApp (TVar "p") (TInterval I0)
-    let app1 = PApp (TVar "p") (TInterval I1)
+    let ctxP = [ ("p", TPath (TUniv 0) (TVar 0) (TVar 0))
+               , ("T", TUniv 0) ]
+    -- p is de Bruijn 0 in this 2-entry context
+    let app0 = PApp (TVar 0) (TInterval I0)
+    let app1 = PApp (TVar 0) (TInterval I1)
     mapM_ (\(lbl, t) ->
         case infer ctxP t of
             Right ty -> putStrLn $
@@ -777,36 +878,36 @@ demoTypeCheck = do
 
     -- ── 7. Ill-typed: applying non-function ───────────────────────────────────
     putStrLn "\n── Ill-typed Examples ──────────────────────────────────────"
-    -- Applying U0 to U0 (U0 is not a function)
     reportInfer "U0 U0 (expected error)" (TApp (TUniv 0) (TUniv 0))
 
-    -- Using a non-Path as a path abstraction target
-    let badCheck = check [] (PLam "i" (TVar "i")) (TUniv 0)
+    let badCheck = check [] (PLam "i" (TVar 0)) (TUniv 0)
     case badCheck of
         Left err -> putStrLn $ "  ✓  ⟨i⟩ i : U0 correctly rejected:\n" ++ show err
         Right () -> putStrLn "  ✗  Should have been rejected!"
 
-    -- ── 8. Dependent application: Church booleans ─────────────────────────────
+    -- ── 8. Church booleans ────────────────────────────────────────────────────
     --   Bool := Π(A:U0). A → A → A
-    --   true := λA. λt. λf. t
-    --   false := λA. λt. λf. f
+    --   true := λA. λt. λf. t    (t = de Bruijn 1)
+    --   false := λA. λt. λf. f   (f = de Bruijn 0)
     putStrLn "\n── Church Booleans ─────────────────────────────────────────"
-    let boolTy = TPi "A" (TUniv 0) (TPi "t" (TVar "A") (TPi "f" (TVar "A") (TVar "A")))
-    let trueTm  = TAbs "A" (TAbs "t" (TAbs "f" (TVar "t")))
-    let falseTm = TAbs "A" (TAbs "t" (TAbs "f" (TVar "f")))
+    let boolTy = TPi "A" (TUniv 0)
+                    (TPi "t" (TVar 0)
+                        (TPi "f" (TVar 1) (TVar 2)))
+    let trueTm  = TAbs "A" (TAbs "t" (TAbs "f" (TVar 1)))
+    let falseTm = TAbs "A" (TAbs "t" (TAbs "f" (TVar 0)))
     reportCheck "true"  trueTm  boolTy
     reportCheck "false" falseTm boolTy
 
     -- ── 9. Pi type itself is well-typed ──────────────────────────────────────
     putStrLn "\n── Π Type Formation ────────────────────────────────────────"
-    -- Π(x : U0). U0 : U1
     let bigPi = TPi "x" (TUniv 0) (TUniv 0)
     reportInfer "Π(x:U0).U0" bigPi
 
     -- ── 10. Path type is well-typed ───────────────────────────────────────────
     putStrLn "\n── Path Type Formation ─────────────────────────────────────"
-    let pathType = TPath (TVar "A") (TVar "x") (TVar "x")
-    let ctxAx = [("x", TVar "A"), ("A", TUniv 0)]
+    -- In context [x:A, A:U0]: A=TVar 1, x=TVar 0
+    let pathType = TPath (TVar 1) (TVar 0) (TVar 0)
+    let ctxAx = [("x", TVar 0), ("A", TUniv 0)]
     case infer ctxAx pathType of
         Right ty -> putStrLn $
             "  ✓  Path A x x  (in context A:U0, x:A)\n       : " ++ show ty
@@ -820,84 +921,67 @@ demoKan :: IO ()
 demoKan = do
     putStrLn "\n=== Kan Composition (hcomp) ==="
 
-    -- ── β-rule ⊤: hcomp A ⊤ (⟨i⟩ t) u₀  ≡  t[i:=1] ─────────────────────────
+    -- ── β-rule ⊤ ──────────────────────────────────────────────────────────────
+    -- hcomp A ⊤ (⟨i⟩ t) u₀ where A,t,u0 are free (TVar 0,1,2 in open ctx)
     putStrLn "\n── β-rule (⊤): hcomp A ⊤ (⟨i⟩ t) u₀  ≡  t ────────────────────"
-    let hTop = THComp (TVar "A")
+    let hTop = THComp (TVar 2)
                       (TInterval I1)
-                      (PLam "i" (TVar "t"))
-                      (TVar "u0")
-    putStrLn $ "  Before: " ++ show hTop
-    putStrLn $ "  After:  " ++ show (eval hTop)
+                      (PLam "i" (TVar 1))   -- t is 1 past PLam binder
+                      (TVar 0)
+    putStrLn $ "  Before: " ++ showTerm ["u0","t","A"] hTop
+    putStrLn $ "  After:  " ++ showTerm ["u0","t","A"] (eval hTop)
 
-    -- ── β-rule ⊥: hcomp A ⊥ u u₀  ≡  u₀ ─────────────────────────────────────
+    -- ── β-rule ⊥ ──────────────────────────────────────────────────────────────
     putStrLn "\n── β-rule (⊥): hcomp A ⊥ (⟨i⟩ t) u₀  ≡  u₀ ──────────────────"
-    let hBot = THComp (TVar "A")
+    let hBot = THComp (TVar 2)
                       (TInterval I0)
-                      (PLam "i" (TVar "t"))
-                      (TVar "u0")
-    putStrLn $ "  Before: " ++ show hBot
-    putStrLn $ "  After:  " ++ show (eval hBot)
+                      (PLam "i" (TVar 1))
+                      (TVar 0)
+    putStrLn $ "  Before: " ++ showTerm ["u0","t","A"] hBot
+    putStrLn $ "  After:  " ++ showTerm ["u0","t","A"] (eval hBot)
 
-    -- ── Degenerate fill: ⟨i⟩ hcomp A i (⟨j⟩ x) x  :  Path A x x ─────────────
-    --
-    --   This is the canonical "degenerate" Kan fill.  Think of it as a 1-cube
-    --   whose φ-face slides from ⊥ (i=0) to ⊤ (i=1):
-    --
-    --      i=0:  hcomp A ⊥ (⟨j⟩ x) x  ≡  x    (β-rule ⊥)
-    --      i=1:  hcomp A ⊤ (⟨j⟩ x) x  ≡  x    (β-rule ⊤)
-    --
-    --   Both endpoints are x, so the whole path has type  Path A x x.
-    --   We type-check it in the open context {A : U0, x : A}.
+    -- ── Degenerate fill ───────────────────────────────────────────────────────
+    -- ⟨i⟩ hcomp A i (⟨j⟩ x) x  :  Path A x x
+    -- In context [x:A, A:U0]; at outer depth A=TVar 1, x=TVar 0
+    -- Inside PLam "i": i=0, x=1, A=2
+    -- Inside inner PLam "j": j=0, i=1, x=2, A=3
     putStrLn "\n── Degenerate fill: ⟨i⟩ hcomp A i (⟨j⟩ x) x  :  Path A x x ──"
     let degFill  = PLam "i"
-                     (THComp (TVar "A")
-                             (TVar "i")
-                             (PLam "j" (TVar "x"))
-                             (TVar "x"))
-    let degFillTy = TPath (TVar "A") (TVar "x") (TVar "x")
-    let ctxAx    = [("x", TVar "A"), ("A", TUniv 0)]
+                     (THComp (TVar 2)              -- A (past i-binder)
+                             (TVar 0)              -- i
+                             (PLam "j" (TVar 2))   -- ⟨j⟩ x (x past j,i binders)
+                             (TVar 1))             -- x (past i-binder)
+    let degFillTy = TPath (TVar 1) (TVar 0) (TVar 0)  -- Path A x x
+    let ctxAx    = [("x", TVar 0), ("A", TUniv 0)]
     putStrLn $ "  Term: " ++ show degFill
     case check ctxAx degFill degFillTy of
         Right () -> putStrLn $
             "  ✓  ⟨i⟩ hcomp A i (⟨j⟩ x) x  :  Path A x x   (in context A:U0, x:A)"
         Left err -> putStrLn $ "  ✗  " ++ show err
 
-    -- ── Path transitivity term via hcomp ──────────────────────────────────────
-    --
-    --   trans : Π(A:U0). Π(x y z:A). Path A x y → Path A y z → Path A x z
-    --   trans = λA x y z p q. ⟨i⟩ hcomp A i (⟨j⟩ q@j) (p@i)
-    --
-    --   Intuition (think of a square with i going right, j going up):
-    --
-    --         x ─── p ──→ y
-    --         |           |
-    --    q@j  |  hcomp    | q@j
-    --         |           |
-    --         x ─── p ──→ z   ← the filled top edge is trans p q
-    --
-    --   At i=0: φ=⊥, so hcomp reduces to the base  p@0 = x  ✓
-    --   At i=1: φ=⊤, so hcomp reduces to the tube  q@1 = z  ✓
-    --
-    --   (Full boundary-coherence verification requires η-expansion of paths and
-    --    a restriction judgement; those are beyond this minimal checker.)
+    -- ── Path transitivity ─────────────────────────────────────────────────────
+    -- trans = λA x y z p q. ⟨i⟩ hcomp A i (⟨j⟩ q@j) (p@i)
+    -- Depth at PLam "i" body (6 λ-binders + 1 PLam = 7):
+    --   i=0, q=1, p=2, z=3, y=4, x=5, A=6
+    -- Inside PLam "j" (depth 8): j=0, i=1, q=2, p=3, z=4, y=5, x=6, A=7
     putStrLn "\n── Path Transitivity (trans) via hcomp ─────────────────────────"
     let transTy =
           TPi "A" (TUniv 0) $
-          TPi "x" (TVar "A") $
-          TPi "y" (TVar "A") $
-          TPi "z" (TVar "A") $
-          TPi "p" (TPath (TVar "A") (TVar "x") (TVar "y")) $
-          TPi "q" (TPath (TVar "A") (TVar "y") (TVar "z")) $
-          TPath (TVar "A") (TVar "x") (TVar "z")
+          TPi "x" (TVar 0) $
+          TPi "y" (TVar 1) $
+          TPi "z" (TVar 2) $
+          TPi "p" (TPath (TVar 3) (TVar 2) (TVar 1)) $
+          TPi "q" (TPath (TVar 4) (TVar 1) (TVar 0)) $
+          TPath (TVar 5) (TVar 4) (TVar 3)
     let transTm =
           TAbs "A" $ TAbs "x" $ TAbs "y" $ TAbs "z" $
           TAbs "p" $ TAbs "q" $
           PLam "i"
             (THComp
-               (TVar "A")
-               (TVar "i")                              -- φ = i  (grows from ⊥ to ⊤)
-               (PLam "j" (PApp (TVar "q") (TVar "j"))) -- tube: ⟨j⟩ q@j
-               (PApp (TVar "p") (TVar "i")))           -- base: p@i
+               (TVar 6)                              -- A
+               (TVar 0)                              -- i
+               (PLam "j" (PApp (TVar 2) (TVar 0)))  -- ⟨j⟩ q@j
+               (PApp (TVar 2) (TVar 0)))             -- p@i
     putStrLn $ "  trans = " ++ show transTm
     putStrLn $ "  trans : " ++ show transTy
 
@@ -909,92 +993,88 @@ demoGlue :: IO ()
 demoGlue = do
     putStrLn "\n=== Glue Types ==="
 
+    -- Free variables A, T, i are represented as TVar 2, TVar 1, TVar 0
+    -- in an imaginary open context [i, T, A] (index 0 = most recent)
+
     -- ── β-rule ⊤: Glue A ⊤ T  ≡  T ──────────────────────────────────────────
     putStrLn "\n── β-rule (⊤): Glue A ⊤ T  ≡  T ──────────────────────────────"
-    let glueTop = TGlue (TVar "A") (TInterval I1) (TVar "T")
-    putStrLn $ "  Before: " ++ show glueTop
-    putStrLn $ "  After:  " ++ show (eval glueTop)
+    let glueTop = TGlue (TVar 2) (TInterval I1) (TVar 1)
+    putStrLn $ "  Before: " ++ showTerm ["i","T","A"] glueTop
+    putStrLn $ "  After:  " ++ showTerm ["i","T","A"] (eval glueTop)
 
     -- ── β-rule ⊥: Glue A ⊥ T  ≡  A ──────────────────────────────────────────
     putStrLn "\n── β-rule (⊥): Glue A ⊥ T  ≡  A ──────────────────────────────"
-    let glueBot = TGlue (TVar "A") (TInterval I0) (TVar "T")
-    putStrLn $ "  Before: " ++ show glueBot
-    putStrLn $ "  After:  " ++ show (eval glueBot)
+    let glueBot = TGlue (TVar 2) (TInterval I0) (TVar 1)
+    putStrLn $ "  Before: " ++ showTerm ["i","T","A"] glueBot
+    putStrLn $ "  After:  " ++ showTerm ["i","T","A"] (eval glueBot)
 
     -- ── Glue type formation ───────────────────────────────────────────────────
-    --   Glue U0 i T  :  U0
-    --   In context {i : 𝕀, T : U0, A : U0}
+    -- ctx: [i:𝕀, T:U0, A:U0]  → indices: i=0, T=1, A=2
     putStrLn "\n── Glue Type Formation ─────────────────────────────────────────"
-    let ctxGlue = [("T", TUniv 0), ("A", TUniv 0), ("i", intervalTy)]
-    let glueTy  = TGlue (TVar "A") (TVar "i") (TVar "T")
+    let ctxGlue = [("i", intervalTy), ("T", TUniv 0), ("A", TUniv 0)]
+    let glueTy  = TGlue (TVar 2) (TVar 0) (TVar 1)
     case infer ctxGlue glueTy of
         Right ty -> putStrLn $
             "  ✓  Glue A i T  (in context A:U0, T:U0, i:𝕀)\n       : " ++ show ty
         Left err -> putStrLn $ "  ✗  " ++ show err
 
-    -- ── glue element β-rule ⊤ ─────────────────────────────────────────────────
-    --   glue ⊤ t a  ≡  t
+    -- ── glue element β-rules ──────────────────────────────────────────────────
     putStrLn "\n── glue β-rule (⊤): glue ⊤ t a  ≡  t ─────────────────────────"
-    let glueElemTop = TGlueElem (TInterval I1) (TVar "t") (TVar "a")
-    putStrLn $ "  Before: " ++ show glueElemTop
-    putStrLn $ "  After:  " ++ show (eval glueElemTop)
+    let glueElemTop = TGlueElem (TInterval I1) (TVar 1) (TVar 0)
+    putStrLn $ "  Before: " ++ showTerm ["a","t"] glueElemTop
+    putStrLn $ "  After:  " ++ showTerm ["a","t"] (eval glueElemTop)
 
-    -- ── glue element β-rule ⊥ ─────────────────────────────────────────────────
-    --   glue ⊥ t a  ≡  a
     putStrLn "\n── glue β-rule (⊥): glue ⊥ t a  ≡  a ─────────────────────────"
-    let glueElemBot = TGlueElem (TInterval I0) (TVar "t") (TVar "a")
-    putStrLn $ "  Before: " ++ show glueElemBot
-    putStrLn $ "  After:  " ++ show (eval glueElemBot)
+    let glueElemBot = TGlueElem (TInterval I0) (TVar 1) (TVar 0)
+    putStrLn $ "  Before: " ++ showTerm ["a","t"] glueElemBot
+    putStrLn $ "  After:  " ++ showTerm ["a","t"] (eval glueElemBot)
 
     -- ── Checking a glue element ───────────────────────────────────────────────
-    --   Given: A : U0, T : U0, t : T, a : A
-    --   Check: glue i t a  :  Glue A i T   (in context with i:𝕀)
+    -- ctx: [a:A, t:T, T:U0, A:U0, i:𝕀]  → a=0, t=1, T=2, A=3, i=4
     putStrLn "\n── glue Element Checking ───────────────────────────────────────"
-    let ctxElem  = [ ("a", TVar "A"), ("t", TVar "T")
-                   , ("T", TUniv 0), ("A", TUniv 0), ("i", intervalTy) ]
-    let elemTm   = TGlueElem (TVar "i") (TVar "t") (TVar "a")
-    let elemTy   = TGlue (TVar "A") (TVar "i") (TVar "T")
+    let ctxElem  = [ ("a", TVar 0)   -- a : A  (type stored as TVar 0; lookupCtx shifts it)
+                   , ("t", TVar 0)   -- t : T
+                   , ("T", TUniv 0)
+                   , ("A", TUniv 0)
+                   , ("i", intervalTy) ]
+    let elemTm   = TGlueElem (TVar 4) (TVar 1) (TVar 0)     -- glue i t a
+    let elemTy   = TGlue (TVar 3) (TVar 4) (TVar 2)          -- Glue A i T
     case check ctxElem elemTm elemTy of
         Right () -> putStrLn $
             "  ✓  glue i t a  :  Glue A i T   (in context A:U0, T:U0, t:T, a:A, i:𝕀)"
         Left err -> putStrLn $ "  ✗  " ++ show err
 
-    -- ── unglue β-rule ⊤ ──────────────────────────────────────────────────────
-    --   unglue ⊤ T_e g  ≡  g
+    -- ── unglue β-rules ────────────────────────────────────────────────────────
     putStrLn "\n── unglue β-rule (⊤): unglue ⊤ T_e g  ≡  g ───────────────────"
-    let unglueTop = TUnglue (TInterval I1) (TVar "T") (TVar "g")
-    putStrLn $ "  Before: " ++ show unglueTop
-    putStrLn $ "  After:  " ++ show (eval unglueTop)
+    let unglueTop = TUnglue (TInterval I1) (TVar 1) (TVar 0)
+    putStrLn $ "  Before: " ++ showTerm ["g","T"] unglueTop
+    putStrLn $ "  After:  " ++ showTerm ["g","T"] (eval unglueTop)
 
-    -- ── unglue β-rule ⊥ ──────────────────────────────────────────────────────
-    --   unglue ⊥ T_e g  ≡  g
     putStrLn "\n── unglue β-rule (⊥): unglue ⊥ T_e g  ≡  g ───────────────────"
-    let unglueBot = TUnglue (TInterval I0) (TVar "T") (TVar "g")
-    putStrLn $ "  Before: " ++ show unglueBot
-    putStrLn $ "  After:  " ++ show (eval unglueBot)
+    let unglueBot = TUnglue (TInterval I0) (TVar 1) (TVar 0)
+    putStrLn $ "  Before: " ++ showTerm ["g","T"] unglueBot
+    putStrLn $ "  After:  " ++ showTerm ["g","T"] (eval unglueBot)
 
     -- ── unglue type inference ─────────────────────────────────────────────────
-    --   Given: g : Glue A i T   (in context with i:𝕀, A:U0, T:U0)
-    --   Infer: unglue i T g  :  A
+    -- ctx: [g:Glue A i T, T:U0, A:U0, i:𝕀]  → g=0, T=1, A=2, i=3
     putStrLn "\n── unglue Type Inference ───────────────────────────────────────"
-    let ctxUnglue = [ ("g", TGlue (TVar "A") (TVar "i") (TVar "T"))
+    let ctxUnglue = [ ("g", TGlue (TVar 1) (TVar 2) (TVar 0))
                     , ("T", TUniv 0), ("A", TUniv 0), ("i", intervalTy) ]
-    let unglueTm  = TUnglue (TVar "i") (TVar "T") (TVar "g")
+    let unglueTm  = TUnglue (TVar 3) (TVar 1) (TVar 0)
     case infer ctxUnglue unglueTm of
         Right ty -> putStrLn $
             "  ✓  unglue i T g  (in context)\n       : " ++ show ty
         Left err -> putStrLn $ "  ✗  " ++ show err
 
-    -- ── Stuck Glue (neutral face) ─────────────────────────────────────────────
-    --   When φ is a free variable the Glue type stays in normal form.
+    -- ── Stuck Glue ────────────────────────────────────────────────────────────
     putStrLn "\n── Stuck Glue (neutral φ = free variable) ──────────────────────"
-    let stuckGlue = TGlue (TVar "A") (TVar "i") (TVar "T")
-    putStrLn $ "  Glue A i T  normalises to:  " ++ show (eval stuckGlue)
+    let stuckGlue = TGlue (TVar 2) (TVar 0) (TVar 1)
+    putStrLn $ "  Glue A i T  normalises to:  " ++ showTerm ["i","T","A"] (eval stuckGlue)
 
-    -- ── Round-trip: unglue ∘ glue  ≡  id on A ────────────────────────────────
-    --   unglue ⊥ T (glue ⊥ t a)  ≡  a   (both sides reduce)
+    -- ── Round-trip ────────────────────────────────────────────────────────────
+    -- unglue ⊥ T (glue ⊥ t a)  ≡  a
     putStrLn "\n── Round-trip: unglue ⊥ T (glue ⊥ t a)  ≡  a ─────────────────"
-    let roundTrip = TUnglue (TInterval I0) (TVar "T")
-                             (TGlueElem (TInterval I0) (TVar "t") (TVar "a"))
-    putStrLn $ "  Before: " ++ show roundTrip
-    putStrLn $ "  After:  " ++ show (eval roundTrip)
+    let roundTrip = TUnglue (TInterval I0) (TVar 2)
+                             (TGlueElem (TInterval I0) (TVar 1) (TVar 0))
+    putStrLn $ "  Before: " ++ showTerm ["a","t","T"] roundTrip
+    putStrLn $ "  After:  " ++ showTerm ["a","t","T"] (eval roundTrip)
