@@ -645,6 +645,51 @@ main = do
 
 -- demos -----------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+-- Eval Demo
+--------------------------------------------------------------------------------
+
+demoEval :: IO ()
+demoEval = do
+    putStrLn "=== Cubical Lambda Calculus with Path Types ==="
+
+    -- 1. Identity function (Standard Pi Type)
+    let idType = TPi "A" (TUniv 0) (TPi "x" (TVar "A") (TVar "A"))
+    let idTerm = TAbs "A" (TAbs "x" (TVar "x"))
+
+    putStrLn $ "\nIdentity Type: " ++ show idType
+    putStrLn $ "Identity Term: " ++ show idTerm
+
+    -- 2. Reflexivity (Path Type)
+    -- refl : Π(A:U0). Π(x:A). Path A x x
+    -- refl = λA. λx. ⟨i⟩ x
+    let refl = TAbs "A" (TAbs "x" (PLam "i" (TVar "x")))
+    putStrLn $ "\nReflexivity (refl): " ++ show refl
+
+    -- 3. Path Application
+    -- Applying refl to a type and term, then applying an interval
+    -- (refl U0 T) @ 0
+    let testPath = PApp (TApp (TApp refl (TUniv 0)) (TVar "T")) (TInterval I0)
+    putStrLn $ "\nEvaluating (refl U0 T) @ 0:"
+    putStrLn $ "Result: " ++ show (eval testPath)
+
+    -- 4. De Morgan in the Interval (Normalized inside a Path)
+    let deMorganLHS = Neg (Join (IVar 0) (IVar 1))
+    let deMorganRHS = Meet (Neg (IVar 0)) (Neg (IVar 1))
+    let pathDeMorgan = TPath (TUniv 0) (TInterval deMorganLHS) (TInterval deMorganRHS)
+
+    putStrLn $ "\nNormalized De Morgan Interval in Type:"
+    putStrLn $ "Raw:        " ++ show pathDeMorgan
+    putStrLn $ "Normalized: " ++ show (eval pathDeMorgan)
+
+    -- 5. Symmetry (Function that flips a path)
+    -- sym : Π(A:U0). Π(x y: A). Path A x y -> Path A y x
+    -- sym = λA. λx. λy. λp. ⟨i⟩ p @ ¬i
+    let sym = TAbs "A" (TAbs "x" (TAbs "y"
+                (TAbs "p" (PLam "i"
+                    (PApp (TVar "p") (TInterval (Neg (IVar 0))))))))
+    putStrLn $ "\nSymmetry term: " ++ show sym
+
 -- ---------------------------------------------------------------------------
 -- Type-checker demo
 -- ---------------------------------------------------------------------------
@@ -855,53 +900,6 @@ demoKan = do
                (PApp (TVar "p") (TVar "i")))           -- base: p@i
     putStrLn $ "  trans = " ++ show transTm
     putStrLn $ "  trans : " ++ show transTy
-
-
---------------------------------------------------------------------------------
--- Eval Demo
---------------------------------------------------------------------------------
-
-demoEval :: IO ()
-demoEval = do
-    putStrLn "=== Cubical Lambda Calculus with Path Types ==="
-
-    -- 1. Identity function (Standard Pi Type)
-    let idType = TPi "A" (TUniv 0) (TPi "x" (TVar "A") (TVar "A"))
-    let idTerm = TAbs "A" (TAbs "x" (TVar "x"))
-
-    putStrLn $ "\nIdentity Type: " ++ show idType
-    putStrLn $ "Identity Term: " ++ show idTerm
-
-    -- 2. Reflexivity (Path Type)
-    -- refl : Π(A:U0). Π(x:A). Path A x x
-    -- refl = λA. λx. ⟨i⟩ x
-    let refl = TAbs "A" (TAbs "x" (PLam "i" (TVar "x")))
-    putStrLn $ "\nReflexivity (refl): " ++ show refl
-
-    -- 3. Path Application
-    -- Applying refl to a type and term, then applying an interval
-    -- (refl U0 T) @ 0
-    let testPath = PApp (TApp (TApp refl (TUniv 0)) (TVar "T")) (TInterval I0)
-    putStrLn $ "\nEvaluating (refl U0 T) @ 0:"
-    putStrLn $ "Result: " ++ show (eval testPath)
-
-    -- 4. De Morgan in the Interval (Normalized inside a Path)
-    let deMorganLHS = Neg (Join (IVar 0) (IVar 1))
-    let deMorganRHS = Meet (Neg (IVar 0)) (Neg (IVar 1))
-    let pathDeMorgan = TPath (TUniv 0) (TInterval deMorganLHS) (TInterval deMorganRHS)
-
-    putStrLn $ "\nNormalized De Morgan Interval in Type:"
-    putStrLn $ "Raw:        " ++ show pathDeMorgan
-    putStrLn $ "Normalized: " ++ show (eval pathDeMorgan)
-
-    -- 5. Symmetry (Function that flips a path)
-    -- sym : Π(A:U0). Π(x y: A). Path A x y -> Path A y x
-    -- sym = λA. λx. λy. λp. ⟨i⟩ p @ ¬i
-    let sym = TAbs "A" (TAbs "x" (TAbs "y"
-                (TAbs "p" (PLam "i"
-                    (PApp (TVar "p") (TInterval (Neg (IVar 0))))))))
-    putStrLn $ "\nSymmetry term: " ++ show sym
-
 
 --------------------------------------------------------------------------------
 -- Glue Types Demo
