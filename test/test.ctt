@@ -1,3 +1,185 @@
-def myType = U1
-def myId : Π(x : myType). myType = λx. x
-myId
+-- ============================================================
+-- test.ctt — Cubical Lambda test suite
+-- Run with:  cubical test.ctt
+-- ============================================================
+
+
+-- ------------------------------------------------------------
+-- 1. Universes
+-- ------------------------------------------------------------
+
+U0
+U1
+U2
+
+
+-- ------------------------------------------------------------
+-- 2. Basic definitions (inferred types)
+-- ------------------------------------------------------------
+
+def Type0 = U0
+def Type1 = U1
+
+-- Alias — should print  def Type0Alias : U1
+def Type0Alias = Type0
+
+
+-- ------------------------------------------------------------
+-- 3. Lambda and Pi
+-- ------------------------------------------------------------
+
+-- Identity function: takes a value of type U0, returns it
+-- (U0 here is the type, so arguments must be elements of U0, e.g. 𝕀)
+def id : Π(x:U0). U0 = λx. x
+
+-- Const function
+def const : Π(x:U0). Π(y:U0). U0 = λx. λy. x
+
+-- Function composition type (bare term — just infer)
+Π(A:U0). Π(B:U0). Π(C:U0). Π(f:Π(x:B).C). Π(g:Π(x:A).B). Π(x:A). C
+
+-- Apply id to an element that lives in U0: 𝕀 : U0, so id 𝕀 : U0
+-- (U1 is NOT a valid argument since U1 : U2, not U0)
+id TIntervalTy
+
+
+-- ------------------------------------------------------------
+-- 4. Path types and path abstraction
+-- ------------------------------------------------------------
+
+-- Constant path on U0
+def constPath : Path U1 U0 U0 = ⟨i⟩ U0
+
+-- Path endpoint reduction via @
+constPath @ 0
+constPath @ 1
+
+-- Path of paths
+def pathOfPaths = Path U2 (Path U1 U0 U0) (Path U1 U0 U0)
+
+
+-- ------------------------------------------------------------
+-- 5. Interval literals (each has type 𝕀)
+-- ------------------------------------------------------------
+
+0
+1
+i0
+i1
+
+
+-- ------------------------------------------------------------
+-- 6. Kan composition (hcomp)
+-- ------------------------------------------------------------
+
+-- phi = 0: reduces to cap U0
+hcomp U1 [0] ⟨i⟩ U0 U0
+
+-- phi = 1: reduces to tube@1 = U0
+hcomp U1 [1] ⟨i⟩ U0 U0
+
+-- phi = i0: stuck (free variable), type is U1
+hcomp U1 [i0] ⟨i⟩ U0 U0
+
+
+-- ------------------------------------------------------------
+-- 7. Equivalences
+-- ------------------------------------------------------------
+
+-- Type of self-equivalences of U0
+def SelfEquiv = Equiv U0 U0
+
+-- The identity equivalence on U0
+def idEquiv : Equiv U0 U0 = mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+
+-- Bare infer: should give Equiv U0 U0
+idEquiv
+
+-- equivFwd with a named equiv — should reduce via β to 𝕀 (since id 𝕀 = 𝕀)
+equivFwd idEquiv TIntervalTy
+
+
+-- ------------------------------------------------------------
+-- 8. Univalence
+-- ------------------------------------------------------------
+
+-- ua turns idEquiv into a path in U1
+def uaPath : Path U1 U0 U0 = ua idEquiv
+
+-- transport along uaPath: uaβ fires, gives back the element
+-- transport (ua e) x ≡ equivFwd e x ≡ x
+-- We use 𝕀 as the element since 𝕀 : U0
+def transported = transport uaPath TIntervalTy
+
+-- Check it has type U0
+check transportedIsU0 : U0 = transported
+
+
+-- ------------------------------------------------------------
+-- 9. Glue types
+-- ------------------------------------------------------------
+
+-- phi = 0: Glue A [0] e  ≡  A = U0 : U1
+def glueBot = Glue U0 [0] idEquiv
+
+-- phi = 1: Glue A [1] e  ≡  dom(e) = U0 : U1
+def glueTop = Glue U0 [1] idEquiv
+
+check glueBotIsType : U1 = glueBot
+check glueTopIsType : U1 = glueTop
+
+
+-- ------------------------------------------------------------
+-- 10. Glue elements and unglue
+-- ------------------------------------------------------------
+
+-- glue [1] t a  ≡  t
+def glueElem1 = glue [1] TIntervalTy TIntervalTy
+
+-- glue [0] t a  ≡  a
+def glueElem0 = glue [0] TIntervalTy TIntervalTy
+
+-- unglue [1] e g: applies equivFwd e g
+def unglueTop = unglue [1] idEquiv TIntervalTy
+
+-- unglue [0] e g: returns g
+def unglueBot = unglue [0] idEquiv TIntervalTy
+
+
+-- ------------------------------------------------------------
+-- 11. Context persistence — names accumulate across lines
+-- ------------------------------------------------------------
+
+def myEquiv : Equiv U0 U0 = idEquiv
+def myPath  : Path U1 U0 U0 = ua myEquiv
+def myVal   : U0 = transport myPath TIntervalTy
+
+check contextWorks : U0 = myVal
+
+
+-- ------------------------------------------------------------
+-- 12. Pi over defined type aliases
+-- ------------------------------------------------------------
+
+def myType = U0
+Π(x:myType). myType
+
+-- Pi whose domain is a defined Equiv type
+Π(e:SelfEquiv). Path U1 U0 U0
+
+
+-- ------------------------------------------------------------
+-- 13. Expected failures — uncomment one at a time to test errors
+-- ------------------------------------------------------------
+
+-- Unbound variable:
+-- unbound_name
+
+-- Type mismatch (U0 is not U1):
+-- check shouldFail : U1 = U0
+
+-- Missing ε in mkEquiv:
+-- mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a)
+
+-- Lambda without annotation (CannotInfer):
+-- def badDef = λx. x
