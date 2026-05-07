@@ -48,7 +48,6 @@ instance Monad Parser where
 failP :: ParseError -> Parser a
 failP msg = Parser $ \_ -> Left msg
 
--- | Run p; on failure restore input unconsumed.
 try :: Parser a -> Parser (Maybe a)
 try (Parser p) = Parser $ \s ->
     case p s of
@@ -68,14 +67,12 @@ spaces = Parser $ \s -> Right ((), dropWhile isSpace s)
 lexeme :: Parser a -> Parser a
 lexeme p = spaces *> p
 
--- | Match an exact string after skipping spaces.
 symbol :: String -> Parser ()
 symbol sym = lexeme $ Parser $ \s ->
     case stripPrefix sym s of
         Just rest -> Right ((), rest)
         Nothing   -> Left ("expected " ++ show sym)
 
--- | Match a keyword: must NOT be followed by alnum or '_'.
 keyword :: String -> Parser ()
 keyword kw = lexeme $ Parser $ \s ->
     case stripPrefix kw s of
@@ -84,7 +81,6 @@ keyword kw = lexeme $ Parser $ \s ->
                         -> Left ("expected keyword " ++ kw)
         Just rest       -> Right ((), rest)
 
--- | Identifier: starts with letter/'_', continues with alnum/'_'/'\''.
 name :: Parser Name
 name = lexeme $ Parser $ \s ->
     case s of
@@ -99,7 +95,6 @@ parens   p = symbol "(" *> p <* symbol ")"
 brackets :: Parser a -> Parser a
 brackets p = symbol "[" *> p <* symbol "]"
 
--- ⟨…⟩  U+27E8 / U+27E9
 angles :: Parser a -> Parser a
 angles p = symbol "\10216" *> p <* symbol "\10217"
 
@@ -123,7 +118,7 @@ iJoin = do
     go l
   where
     go acc = do
-        mv <- try (symbol "\8744")   -- ∨
+        mv <- try (symbol "\8744")
         case mv of
             Nothing -> return acc
             Just () -> iMeet >>= \r -> go (Join acc r)
@@ -134,13 +129,13 @@ iMeet = do
     go l
   where
     go acc = do
-        mv <- try (symbol "\8743")   -- ∧
+        mv <- try (symbol "\8743")
         case mv of
             Nothing -> return acc
             Just () -> iNeg >>= \r -> go (Meet acc r)
 
 iNeg :: Parser I
-iNeg = (symbol "\172" *> fmap Neg iNeg)   -- ¬
+iNeg = (symbol "\172" *> fmap Neg iNeg)
     <|> iAtom
 
 iAtom :: Parser I
@@ -167,30 +162,26 @@ parseTerm s =
         Right (t, "") -> Right t
         Right (_, r)  -> Left ("leftover: " ++ r)
 
--- term  ::=  lam | plam | pi | app
 termWith :: Env -> Parser Term
 termWith env = lamP env <|> plamP env <|> piP env <|> appP env
 
--- λx. body
 lamP :: Env -> Parser Term
 lamP env = do
-    symbol "\955"   -- λ
+    symbol "\955"
     x    <- name
     symbol "."
     body <- termWith (x : env)
     return (TAbs x body)
 
--- ⟨x⟩ body
 plamP :: Env -> Parser Term
 plamP env = do
     x    <- angles name
     body <- termWith (x : env)
     return (PLam x body)
 
--- Π(x:A). B
 piP :: Env -> Parser Term
 piP env = do
-    symbol "\928"   -- Π
+    symbol "\928"
     symbol "("
     x   <- name
     symbol ":"
@@ -200,7 +191,6 @@ piP env = do
     bTy <- termWith (x : env)
     return (TPi x aTy bTy)
 
--- Left-associative application chain; also handles  t @ r  (path app).
 appP :: Env -> Parser Term
 appP env = do
     f <- atomP env
@@ -216,35 +206,24 @@ appP env = do
                     Nothing  -> return acc
                     Just arg -> go (TApp acc arg)
 
--- ── atomP ─────────────────────────────────────────────────────────────────────
--- An atom is anything that can appear as a function/argument without extra
--- parens.  Critically, pathP / hcompP / glueTypeP / glueElemP / unglueP are
--- NOT atoms — they take multiple arguments and must be wrapped in parens when
--- used as an argument to something else.
---
---   atom  ::=  U<n> | 𝕀 | hcomp… | Glue… | glue… | unglue… | Path…
---            | i<n> | 0 | 1 | <name> | '(' term ')'
---
--- The multi-arg forms ARE atoms at the top level of appP (they appear as the
--- head), but when they appear as arguments inside another term they must be
--- parenthesised.  We handle this by letting appP call atomP for each spine
--- element; inside parens the full termWith is used so a parenthesised Path/
--- hcomp/etc. parses correctly.
--- ──────────────────────────────────────────────────────────────────────────────
 atomP :: Env -> Parser Term
 atomP env
      =  univP
     <|> intervalTyP
-    <|> intervalLitP           -- i<n>, 0, 1  — must come before varP
-    <|> hcompP  env            -- keyword-headed, safe to try
+    <|> intervalLitP
+    <|> hcompP    env
     <|> glueTypeP env
     <|> glueElemP env
-    <|> unglueP env
-    <|> pathP env
-    <|> varP env               -- plain identifier last
-    <|> parens (termWith env)  -- parenthesised sub-term (full grammar inside)
+    <|> unglueP   env
+    <|> pathP     env
+    <|> equivP    env        -- Equiv A B
+    <|> mkEquivP  env        -- mkEquiv A B f g η ε
+    <|> equivFwdP env        -- equivFwd e x
+    <|> uaP       env        -- ua e
+    <|> transportP env       -- transport p x
+    <|> varP env
+    <|> parens (termWith env)
 
--- U<n>
 univP :: Parser Term
 univP = lexeme $ Parser $ \s ->
     case s of
@@ -253,18 +232,12 @@ univP = lexeme $ Parser $ \s ->
             _               -> Left "expected U<n>"
         _ -> Left "expected universe"
 
--- 𝕀
 intervalTyP :: Parser Term
 intervalTyP = symbol "\120128" *> return TIntervalTy
 
--- i<n> | 0 | 1  in term position
--- Must NOT swallow a name like "if": only matches i followed by digits,
--- or a bare 0/1 not followed by more digits/letters.
--- | Returns True if the character cannot continue an identifier.
 notIdentChar :: Char -> Bool
 notIdentChar c = not (isAlphaNum c || c == '_' || c == '\'')
 
--- | True if the string is empty or starts with a non-identifier character.
 notIdentCont :: String -> Bool
 notIdentCont []    = True
 notIdentCont (c:_) = notIdentChar c
@@ -280,8 +253,6 @@ intervalLitP = fmap TInterval $ lexeme $ Parser $ \s ->
         ('1':rest) | notIdentCont rest -> Right (I1, rest)
         _          -> Left "not an interval literal"
 
--- Path A u v
--- A, u, v are each atoms (use parens for compound arguments).
 pathP :: Env -> Parser Term
 pathP env = do
     keyword "Path"
@@ -290,9 +261,6 @@ pathP env = do
     v <- atomP env
     return (TPath a u v)
 
--- hcomp A [φ] u u0
--- u may be a bare ⟨x⟩ body (PLam), a parenthesised term, or an atom.
--- When bare, the body is a single atomP to avoid greedily consuming u0.
 hcompP :: Env -> Parser Term
 hcompP env = do
     keyword "hcomp"
@@ -302,14 +270,12 @@ hcompP env = do
     u0  <- atomP env
     return (THComp a phi u u0)
 
--- PLam with atom body (prevents eating u0 when used bare inside hcomp).
 plamAtomP :: Env -> Parser Term
 plamAtomP env = do
     x    <- angles name
     body <- atomP (x : env)
     return (PLam x body)
 
--- Glue A [φ] te
 glueTypeP :: Env -> Parser Term
 glueTypeP env = do
     keyword "Glue"
@@ -318,7 +284,6 @@ glueTypeP env = do
     te  <- parens (termWith env) <|> atomP env
     return (TGlue a phi te)
 
--- glue [φ] t a
 glueElemP :: Env -> Parser Term
 glueElemP env = do
     keyword "glue"
@@ -327,7 +292,6 @@ glueElemP env = do
     a   <- atomP env
     return (TGlueElem phi t a)
 
--- unglue [φ] te g
 unglueP :: Env -> Parser Term
 unglueP env = do
     keyword "unglue"
@@ -336,7 +300,49 @@ unglueP env = do
     g   <- atomP env
     return (TUnglue phi te g)
 
--- named variable → de Bruijn index
+-- Equiv A B
+equivP :: Env -> Parser Term
+equivP env = do
+    keyword "Equiv"
+    a <- atomP env
+    b <- atomP env
+    return (TEquiv a b)
+
+-- mkEquiv A B f g eta eps
+mkEquivP :: Env -> Parser Term
+mkEquivP env = do
+    keyword "mkEquiv"
+    a   <- atomP env
+    b   <- atomP env
+    f   <- parens (termWith env) <|> atomP env
+    g   <- parens (termWith env) <|> atomP env
+    eta <- parens (termWith env) <|> atomP env
+    eps <- parens (termWith env) <|> atomP env
+    return (TMkEquiv a b f g eta eps)
+
+-- equivFwd e x
+equivFwdP :: Env -> Parser Term
+equivFwdP env = do
+    keyword "equivFwd"
+    e <- parens (termWith env) <|> atomP env
+    x <- atomP env
+    return (TEquivFwd e x)
+
+-- ua e
+uaP :: Env -> Parser Term
+uaP env = do
+    keyword "ua"
+    e <- parens (termWith env) <|> atomP env
+    return (TUa e)
+
+-- transport p x
+transportP :: Env -> Parser Term
+transportP env = do
+    keyword "transport"
+    p <- parens (termWith env) <|> atomP env
+    x <- atomP env
+    return (TTransport p x)
+
 varP :: Env -> Parser Term
 varP env = do
     x <- name
