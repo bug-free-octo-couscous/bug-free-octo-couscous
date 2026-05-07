@@ -661,3 +661,33 @@ reportCheck label t ty =
             ++ "\n       : " ++ show ty
         Left err ->
             putStrLn $ "  ✗  " ++ label ++ "\n" ++ show err
+
+--------------------------------------------------------------------------------
+-- Global named environment
+--------------------------------------------------------------------------------
+
+-- | A global definition: (name, type, value).
+-- Definitions are stored most-recent first.
+type GlobalEnv = [(Name, Term, Term)]
+
+-- | Build a Ctx (de Bruijn list) from a GlobalEnv for type-checking.
+-- Variables are ordered innermost-first, so we reverse the env.
+globalCtx :: GlobalEnv -> Ctx
+globalCtx genv = map (\(n, ty, _) -> (n, ty)) (reverse genv)
+
+-- | Wrap a term so that global definitions are in scope as let-bindings.
+-- Concretely:  applyGlobals [(x,T,v), ...] t  =  (λx. t) v
+-- applied in order from outermost (first defined) to innermost (last defined),
+-- so the de Bruijn indices inside 't' see the most-recent def as #0.
+applyGlobals :: GlobalEnv -> Term -> Term
+applyGlobals genv t = foldr wrap t (reverse genv)
+  where
+    wrap (x, _ty, val) body = TApp (TAbs x body) val
+
+-- | Infer the type of a term in the context of a GlobalEnv.
+inferWithEnv :: GlobalEnv -> Term -> Either TypeError Term
+inferWithEnv genv t = infer (globalCtx genv) t
+
+-- | Check a term against a type in the context of a GlobalEnv.
+checkWithEnv :: GlobalEnv -> Term -> Term -> Either TypeError ()
+checkWithEnv genv t ty = check (globalCtx genv) t ty

@@ -9,7 +9,7 @@ well-formed term without hitting a parse error.
 ## Table of Contents
 
 1. [Quick-start cheatsheet](#1-quick-start-cheatsheet)
-2. [File format](#2-file-format)
+2. [File format and statements](#2-file-format)
 3. [Lexical basics — names, keywords, whitespace](#3-lexical-basics)
 4. [Unicode symbols you need](#4-unicode-symbols)
 5. [Interval expressions](#5-interval-expressions)
@@ -28,6 +28,10 @@ well-formed term without hitting a parse error.
 
 | What you want to write | Syntax |
 |---|---|
+| Define a name (inferred type) | `def x = e` |
+| Define a name (explicit type) | `def x : T = e` |
+| Check a term without binding | `check label : T = e` |
+| Infer the type of a term | `<term>` (bare, no keyword) |
 | Universe level *n* | `U0` `U1` `U2` … |
 | Interval pseudo-type | `𝕀` |
 | Interval endpoint | `0` or `1` |
@@ -50,25 +54,89 @@ well-formed term without hitting a parse error.
 
 ---
 
-## 2. File format
+## 2. File format and statements
 
-The CLI reads your source file line by line:
+The CLI reads your source file line by line. Each non-blank, non-comment line is
+one **statement**. Statements can define names, check terms, or infer the type of
+a bare term. Crucially, definitions **persist** — every line sees the names
+defined on all previous lines.
+
+### Statement kinds
+
+#### `def x : T = e` — define with explicit type
+
+Checks that `e` has type `T`, then binds the name `x` to `e` in all subsequent
+lines. The type annotation is mandatory when the term cannot be inferred on its
+own (e.g. a bare lambda).
+
+```
+def myBool : U0 = U0
+def id : Π(x:U0). U0 = λx. x
+```
+
+#### `def x = e` — define with inferred type
+
+Infers the type of `e`, then binds `x`. Use this when the type is obvious.
+
+```
+def U = U0          -- x = U0, type inferred as U1
+def idId = id id    -- uses previously defined id
+```
+
+#### `check label : T = e` — check without binding
+
+Verifies `e : T` and reports success or failure, but does **not** add anything to
+the environment. Useful for assertions and tests.
+
+```
+check myLemma : Path U1 U0 U0 = ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))
+```
+
+#### `<term>` — bare term (infer only)
+
+A line that is none of the above is treated as a bare term whose type is inferred
+and printed. Nothing is added to the environment.
+
+```
+U0                          -- infers U1
+Π(A:U0). Π(x:A). A         -- infers U1
+```
+
+### Comments and blank lines
 
 ```
 -- This is a comment and is ignored entirely.
 
 -- Blank lines are also ignored.
 
-U0                          -- this line is parsed and type-checked
-Π(A:U0). Π(x:A). A         -- so is this one
+def A = U0          -- definitions accumulate across lines
+def B = U0
+Equiv A B           -- A and B are in scope here
 ```
 
-Rules:
-- Lines that start with `--` are **comments** — skipped entirely.
-- **Blank lines** are skipped.
-- Every other line is **one complete term**, parsed and type-checked independently.
+### Scoping rules
 
-There is no multi-line syntax. If a term is too long it still has to live on one line.
+- Names are in scope from the line **after** the `def` that introduces them.
+- A `def` on line *n* can reference any name defined on lines 1 … *n*−1.
+- `check` and bare terms have read-only access to the environment.
+- There is no shadowing protection — redefining a name silently replaces it.
+
+### Why not one term per line?
+
+The previous format required each term to be self-contained on a single line.
+This made it impossible to build up complex types incrementally. The statement
+format removes that constraint: you can define helper types and functions once
+and reuse them across many subsequent lines.
+
+```
+-- Old style — everything inline, hard to read:
+transport (ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))) U0
+
+-- New style — build up in named steps:
+def idEquiv = mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+def uaPath  = ua idEquiv
+transport uaPath U0
+```
 
 ---
 
@@ -93,6 +161,7 @@ U2      -- NOT a name — it is a universe
 The following words are **reserved** and cannot be used as variable names:
 
 ```
+def   check
 Path   hcomp   Glue   glue   unglue   Equiv   mkEquiv   equivFwd   ua   transport
 ```
 
@@ -176,6 +245,13 @@ Glue  U0 [i1] U0            -- phi = 1, so Glue reduces to the fibre U0
 Here is the full grammar in one place. Sections below explain each piece.
 
 ```
+-- Top-level statements (one per line in a source file)
+stmt  ::=  def <name> : term = term      -- define with explicit type
+        |  def <name> = term             -- define with inferred type
+        |  check <name> : term = term    -- check without binding
+        |  term                          -- bare term: infer and print type
+
+-- Terms
 term  ::=  λx. term                         -- lambda abstraction
         |  ⟨x⟩ term                         -- path abstraction
         |  Π(x : term). term                -- dependent product
@@ -198,7 +274,7 @@ atom  ::=  U<n>                             -- universe
         |  equivFwd te atom                 -- apply forward map
         |  ua te                            -- univalence map
         |  transport te atom                -- transport along a path
-        |  <name>                           -- variable
+        |  <name>                           -- variable (local or global)
         |  ( term )                         -- parenthesised term
 ```
 
@@ -207,6 +283,10 @@ where `te` means: `( term )` or `atom` (parentheses required for compound terms)
 The key insight is the **two-level split**: binders and application live at the
 `term` level; the individual pieces of an application spine (function, arguments)
 are `atom`s. This controls which forms need parentheses when nested.
+
+Names appearing as atoms are resolved first against local binders (lambda, Pi,
+path abstraction), then against the accumulated global environment from prior
+`def` statements.
 
 ---
 
@@ -342,13 +422,19 @@ lookup for `i0foo`.
 
 ### Variables — `<name>`
 
-Any in-scope name resolves to its de Bruijn index at parse time:
+A name resolves to a value at parse time. The resolver checks first against
+**local binders** (lambda, Pi, path abstraction arguments), then against the
+**global environment** built up from preceding `def` statements.
 
 ```
-Π(A:U0). Π(x:A). A     -- here the final A refers to the outer binder
+Π(A:U0). Π(x:A). A     -- the final A refers to the outer Π binder
+
+def Nat = U0            -- Nat is now a global name
+Π(n:Nat). Nat           -- Nat resolves to U0 from the global env
 ```
 
-If a name is not in scope, the parser fails with `unbound variable: <name>`.
+If a name is not in scope either locally or globally, the parser fails with
+`unbound variable: <name>`.
 
 ---
 
@@ -672,6 +758,60 @@ transport (ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
 ---
 
 ## 13. Common mistakes
+
+### Using a name before it is defined
+
+Definitions only become available on the line **after** the `def` that introduces
+them. Referring to a name on the same line as its `def` is not allowed.
+
+```
+-- ❌ Wrong — myType is not yet in scope on its own def line
+def myType : myType = U0
+
+-- ✅ Correct — define first, use after
+def myType = U0
+def myAlias : myType = U0   -- myType is in scope here
+```
+
+### Forgetting `def` makes a name globally available
+
+A bare term on a line infers its type but **does not bind a name**. If you want
+to reuse a term on a later line, you must use `def`.
+
+```
+-- ❌ This does NOT make idEquiv available later
+mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+
+-- ✅ This does
+def idEquiv = mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+transport (ua idEquiv) U0    -- idEquiv is in scope here
+```
+
+### Omitting the type annotation on a bare lambda
+
+The type checker cannot infer the type of a lambda without a hint. Always
+provide `: T` in the `def` header, or embed the lambda inside a typed expression.
+
+```
+-- ❌ Wrong — cannot infer type of λx. x
+def myId = λx. x
+
+-- ✅ Correct — type given explicitly
+def myId : Π(x:U0). U0 = λx. x
+```
+
+### Confusing `def` and `check`
+
+`check label : T = e` verifies `e : T` but does **not** add `label` to the
+environment. If you need to refer to the value later, use `def` instead.
+
+```
+check myLemma : Path U1 U0 U0 = ua idEquiv   -- OK for testing
+myLemma                                        -- ❌ unbound — check didn't bind it
+
+def myLemma : Path U1 U0 U0 = ua idEquiv     -- ✅ now it's in scope
+myLemma                                        -- ✅ works
+```
 
 ### Forgetting square brackets around the face
 

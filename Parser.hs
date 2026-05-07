@@ -1,6 +1,8 @@
 module Parser
     ( parseTerm
     , parseInterval
+    , parseStatement
+    , Statement(..)
     , ParseError
     ) where
 
@@ -349,3 +351,57 @@ varP env = do
     case lookup x (zip env [0..]) of
         Just i  -> return (TVar i)
         Nothing -> failP ("unbound variable: " ++ x)
+
+--------------------------------------------------------------------------------
+-- Statements (top-level declarations)
+--------------------------------------------------------------------------------
+
+-- | A statement is either a definition or a bare term to infer/check.
+data Statement
+    = SDef   Name (Maybe Term) Term   -- def x [: T] = e
+    | SCheck Name Term Term           -- check x : T = e  (check only, no binding)
+    | STerm  Term                     -- bare term
+    deriving (Show)
+
+-- | Parse a statement given a GlobalEnv for name resolution.
+-- The GlobalEnv names extend the local Env for de Bruijn resolution.
+parseStatement :: GlobalEnv -> String -> Either ParseError Statement
+parseStatement genv src =
+    case runParser (spaces *> stmtP genv <* spaces) src of
+        Left err      -> Left err
+        Right (s, "") -> Right s
+        Right (_, r)  -> Left ("leftover: " ++ r)
+
+stmtP :: GlobalEnv -> Parser Statement
+stmtP genv = defP genv <|> checkStmtP genv <|> fmap STerm (termWithG genv [])
+
+defP :: GlobalEnv -> Parser Statement
+defP genv = do
+    keyword "def"
+    x <- name
+    -- optional type annotation
+    mTy <- try $ do
+        symbol ":"
+        termWithG genv []
+    symbol "="
+    val <- termWithG genv []
+    return (SDef x mTy val)
+
+checkStmtP :: GlobalEnv -> Parser Statement
+checkStmtP genv = do
+    keyword "check"
+    x <- name
+    symbol ":"
+    ty <- termWithG genv []
+    symbol "="
+    val <- termWithG genv []
+    return (SCheck x ty val)
+
+-- | termWith extended with GlobalEnv names as outermost bindings.
+-- Global names are resolved to de Bruijn indices beyond the local env.
+termWithG :: GlobalEnv -> Env -> Parser Term
+termWithG genv localEnv = termWith fullEnv
+  where
+    -- Global names ordered innermost-first (most-recent = index 0 after locals)
+    globalNames = map (\(n,_,_) -> n) (reverse genv)
+    fullEnv     = localEnv ++ globalNames
