@@ -478,7 +478,7 @@ infer ctx (PApp p r) = do
 
 infer _   (TInterval _)  = Right intervalTy
 infer _   (TCube _)      = Right intervalTy
-infer _   TIntervalTy    = Right TIntervalTy
+infer _   TIntervalTy    = Right (TUniv 0)
 
 infer _   t@(TAbs _ _) = Left (CannotInfer t)
 infer _   t@(PLam _ _) = Left (CannotInfer t)
@@ -518,7 +518,7 @@ infer ctx (TMkEquiv a b f g eta eps) = do
                            (TApp (shift 1 0 f) (TApp (shift 1 0 g) (TVar 0)))
                            (TVar 0))
     check ctx eps epsTy
-    return $ TUniv (max n m)
+    return $ TEquiv a' b'
 
 -- ─── equivFwd Elimination ─────────────────────────────────────────────────────
 -- Γ ⊢ e : Equiv A B    Γ ⊢ x : A
@@ -570,11 +570,28 @@ infer ctx (TGlue aTy phi te) = do
 -- ─── Unglue Elimination ───────────────────────────────────────────────────────
 infer ctx (TUnglue phi te g) = do
     checkInterval ctx phi
-    gTy <- infer ctx g
-    case eval gTy of
-        TGlue aTy _ _ -> return (eval aTy)
-        other         -> Left (Other $
-            "unglue: expected argument of Glue type, got: " ++ show other)
+    let phi' = eval phi
+    if isTopDNF phi'
+       then infer ctx (TEquivFwd te g)  -- unglue [1] e g ≡ equivFwd e g
+       else if isBotDNF phi'
+       then infer ctx g                 -- unglue [0] e g ≡ g
+       else do
+           gTy <- infer ctx g
+           case eval gTy of
+               TGlue aTy _ _ -> return (eval aTy)
+               other         -> Left (Other $
+                   "unglue: expected argument of Glue type, got: " ++ show other)
+
+-- ─── Glue Element Introduction ────────────────────────────────────────────────
+-- glue [φ] t a : Glue A φ e
+-- When φ is concrete (⊤ or ⊥) we can reduce and infer directly.
+infer ctx t@(TGlueElem phi elm a) =
+    let phi' = eval phi
+    in if isTopDNF phi'
+       then infer ctx elm          -- glue [1] t a ≡ t
+       else if isBotDNF phi'
+       then infer ctx a            -- glue [0] t a ≡ a
+       else Left (CannotInfer t)
 
 -- ─── Kan Composition ─────────────────────────────────────────────────────────
 infer ctx (THComp aTy phi tube base) = do

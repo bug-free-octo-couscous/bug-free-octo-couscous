@@ -155,76 +155,82 @@ iAtom = (symbol "0" *> return I0)
 
 --------------------------------------------------------------------------------
 -- Term parser
+-- All parsers take (GlobalEnv, Env) so globals are visible everywhere,
+-- including inside lambda/Pi/path-abstraction bodies.
 --------------------------------------------------------------------------------
 
 parseTerm :: String -> Either ParseError Term
 parseTerm s =
-    case runParser (spaces *> termWith [] <* spaces) s of
+    case runParser (spaces *> twG [] [] <* spaces) s of
         Left err      -> Left err
         Right (t, "") -> Right t
         Right (_, r)  -> Left ("leftover: " ++ r)
 
-termWith :: Env -> Parser Term
-termWith env = lamP env <|> plamP env <|> piP env <|> appP env
+-- | Full env = local names ++ global names (most-recent global = lowest index
+--   after locals).  All recursive calls go through twG/awG so globals are
+--   always visible.
+twG :: GlobalEnv -> Env -> Parser Term
+twG g env = lamG g env <|> plamG g env <|> piG g env <|> appG g env
 
-lamP :: Env -> Parser Term
-lamP env = do
+lamG :: GlobalEnv -> Env -> Parser Term
+lamG g env = do
     symbol "\955"
     x    <- name
     symbol "."
-    body <- termWith (x : env)
+    body <- twG g (x : env)
     return (TAbs x body)
 
-plamP :: Env -> Parser Term
-plamP env = do
+plamG :: GlobalEnv -> Env -> Parser Term
+plamG g env = do
     x    <- angles name
-    body <- termWith (x : env)
+    body <- twG g (x : env)
     return (PLam x body)
 
-piP :: Env -> Parser Term
-piP env = do
+piG :: GlobalEnv -> Env -> Parser Term
+piG g env = do
     symbol "\928"
     symbol "("
     x   <- name
     symbol ":"
-    aTy <- termWith env
+    aTy <- twG g env
     symbol ")"
     symbol "."
-    bTy <- termWith (x : env)
+    bTy <- twG g (x : env)
     return (TPi x aTy bTy)
 
-appP :: Env -> Parser Term
-appP env = do
-    f <- atomP env
+appG :: GlobalEnv -> Env -> Parser Term
+appG g env = do
+    f <- awG g env
     go f
   where
     go acc = do
         mpat <- try (symbol "@")
         case mpat of
-            Just () -> atomP env >>= \r -> go (PApp acc r)
+            Just () -> awG g env >>= \r -> go (PApp acc r)
             Nothing -> do
-                marg <- try (atomP env)
+                marg <- try (awG g env)
                 case marg of
                     Nothing  -> return acc
                     Just arg -> go (TApp acc arg)
 
-atomP :: Env -> Parser Term
-atomP env
+-- | Atom parser — same two-level split, but globals threaded through.
+awG :: GlobalEnv -> Env -> Parser Term
+awG g env
      =  univP
     <|> intervalTyP
     <|> intervalLitP
-    <|> hcompP    env
-    <|> glueTypeP env
-    <|> glueElemP env
-    <|> unglueP   env
-    <|> pathP     env
-    <|> equivP    env        -- Equiv A B
-    <|> mkEquivP  env        -- mkEquiv A B f g η ε
-    <|> equivFwdP env        -- equivFwd e x
-    <|> uaP       env        -- ua e
-    <|> transportP env       -- transport p x
-    <|> varP env
-    <|> parens (termWith env)
+    <|> hcompG    g env
+    <|> glueTypeG g env
+    <|> glueElemG g env
+    <|> unglueG   g env
+    <|> pathG     g env
+    <|> equivG    g env
+    <|> mkEquivG  g env
+    <|> equivFwdG g env
+    <|> uaG       g env
+    <|> transportG g env
+    <|> varG g env
+    <|> parens (twG g env)
 
 univP :: Parser Term
 univP = lexeme $ Parser $ \s ->
@@ -235,7 +241,7 @@ univP = lexeme $ Parser $ \s ->
         _ -> Left "expected universe"
 
 intervalTyP :: Parser Term
-intervalTyP = symbol "\120128" *> return TIntervalTy
+intervalTyP = (symbol "\120128" <|> keyword "TIntervalTy") *> return TIntervalTy
 
 notIdentChar :: Char -> Bool
 notIdentChar c = not (isAlphaNum c || c == '_' || c == '\'')
@@ -255,102 +261,113 @@ intervalLitP = fmap TInterval $ lexeme $ Parser $ \s ->
         ('1':rest) | notIdentCont rest -> Right (I1, rest)
         _          -> Left "not an interval literal"
 
-pathP :: Env -> Parser Term
-pathP env = do
+pathG :: GlobalEnv -> Env -> Parser Term
+pathG g env = do
     keyword "Path"
-    a <- atomP env
-    u <- atomP env
-    v <- atomP env
+    a <- awG g env
+    u <- awG g env
+    v <- awG g env
     return (TPath a u v)
 
-hcompP :: Env -> Parser Term
-hcompP env = do
+hcompG :: GlobalEnv -> Env -> Parser Term
+hcompG g env = do
     keyword "hcomp"
-    a   <- atomP env
-    phi <- brackets (termWith env)
-    u   <- plamAtomP env <|> parens (termWith env) <|> atomP env
-    u0  <- atomP env
+    a   <- awG g env
+    phi <- brackets (twG g env)
+    u   <- plamAtomG g env <|> parens (twG g env) <|> awG g env
+    u0  <- awG g env
     return (THComp a phi u u0)
 
-plamAtomP :: Env -> Parser Term
-plamAtomP env = do
+plamAtomG :: GlobalEnv -> Env -> Parser Term
+plamAtomG g env = do
     x    <- angles name
-    body <- atomP (x : env)
+    body <- awG g (x : env)
     return (PLam x body)
 
-glueTypeP :: Env -> Parser Term
-glueTypeP env = do
+glueTypeG :: GlobalEnv -> Env -> Parser Term
+glueTypeG g env = do
     keyword "Glue"
-    a   <- atomP env
-    phi <- brackets (termWith env)
-    te  <- parens (termWith env) <|> atomP env
+    a   <- awG g env
+    phi <- brackets (twG g env)
+    te  <- parens (twG g env) <|> awG g env
     return (TGlue a phi te)
 
-glueElemP :: Env -> Parser Term
-glueElemP env = do
+glueElemG :: GlobalEnv -> Env -> Parser Term
+glueElemG g env = do
     keyword "glue"
-    phi <- brackets (termWith env)
-    t   <- parens (termWith env) <|> atomP env
-    a   <- atomP env
+    phi <- brackets (twG g env)
+    t   <- parens (twG g env) <|> awG g env
+    a   <- awG g env
     return (TGlueElem phi t a)
 
-unglueP :: Env -> Parser Term
-unglueP env = do
+unglueG :: GlobalEnv -> Env -> Parser Term
+unglueG g env = do
     keyword "unglue"
-    phi <- brackets (termWith env)
-    te  <- parens (termWith env) <|> atomP env
-    g   <- atomP env
-    return (TUnglue phi te g)
+    phi <- brackets (twG g env)
+    te  <- parens (twG g env) <|> awG g env
+    gl  <- awG g env
+    return (TUnglue phi te gl)
 
--- Equiv A B
-equivP :: Env -> Parser Term
-equivP env = do
+equivG :: GlobalEnv -> Env -> Parser Term
+equivG g env = do
     keyword "Equiv"
-    a <- atomP env
-    b <- atomP env
+    a <- awG g env
+    b <- awG g env
     return (TEquiv a b)
 
--- mkEquiv A B f g eta eps
-mkEquivP :: Env -> Parser Term
-mkEquivP env = do
+mkEquivG :: GlobalEnv -> Env -> Parser Term
+mkEquivG g env = do
     keyword "mkEquiv"
-    a   <- atomP env
-    b   <- atomP env
-    f   <- parens (termWith env) <|> atomP env
-    g   <- parens (termWith env) <|> atomP env
-    eta <- parens (termWith env) <|> atomP env
-    eps <- parens (termWith env) <|> atomP env
-    return (TMkEquiv a b f g eta eps)
+    a   <- awG g env
+    b   <- awG g env
+    f   <- parens (twG g env) <|> awG g env
+    gg  <- parens (twG g env) <|> awG g env
+    eta <- parens (twG g env) <|> awG g env
+    eps <- parens (twG g env) <|> awG g env
+    return (TMkEquiv a b f gg eta eps)
 
--- equivFwd e x
-equivFwdP :: Env -> Parser Term
-equivFwdP env = do
+equivFwdG :: GlobalEnv -> Env -> Parser Term
+equivFwdG g env = do
     keyword "equivFwd"
-    e <- parens (termWith env) <|> atomP env
-    x <- atomP env
+    e <- parens (twG g env) <|> awG g env
+    x <- awG g env
     return (TEquivFwd e x)
 
--- ua e
-uaP :: Env -> Parser Term
-uaP env = do
+uaG :: GlobalEnv -> Env -> Parser Term
+uaG g env = do
     keyword "ua"
-    e <- parens (termWith env) <|> atomP env
+    e <- parens (twG g env) <|> awG g env
     return (TUa e)
 
--- transport p x
-transportP :: Env -> Parser Term
-transportP env = do
+transportG :: GlobalEnv -> Env -> Parser Term
+transportG g env = do
     keyword "transport"
-    p <- parens (termWith env) <|> atomP env
-    x <- atomP env
+    p <- parens (twG g env) <|> awG g env
+    x <- awG g env
     return (TTransport p x)
 
-varP :: Env -> Parser Term
-varP env = do
+-- | Resolve a name: local binders first, then globals (most-recent = index
+--   len(env), second-most-recent = len(env)+1, etc.).
+varG :: GlobalEnv -> Env -> Parser Term
+varG g env = do
     x <- name
-    case lookup x (zip env [0..]) of
+    let localPairs  = zip env [0..]
+        globalNames = map (\(n,_,_) -> n) (reverse g)
+        globalPairs = zip globalNames [length env ..]
+        allPairs    = localPairs ++ globalPairs
+    case lookup x allPairs of
         Just i  -> return (TVar i)
         Nothing -> failP ("unbound variable: " ++ x)
+
+-- Keep old termWith/atomP/varP so parseTerm still works (used standalone).
+termWith :: Env -> Parser Term
+termWith env = twG [] env
+
+atomP :: Env -> Parser Term
+atomP env = awG [] env
+
+varP :: Env -> Parser Term
+varP = varG []
 
 --------------------------------------------------------------------------------
 -- Statements (top-level declarations)
@@ -364,44 +381,37 @@ data Statement
     deriving (Show)
 
 -- | Parse a statement given a GlobalEnv for name resolution.
--- The GlobalEnv names extend the local Env for de Bruijn resolution.
 parseStatement :: GlobalEnv -> String -> Either ParseError Statement
-parseStatement genv src =
-    case runParser (spaces *> stmtP genv <* spaces) src of
+parseStatement g src =
+    case runParser (spaces *> stmtP g <* spaces) src of
         Left err      -> Left err
         Right (s, "") -> Right s
         Right (_, r)  -> Left ("leftover: " ++ r)
 
 stmtP :: GlobalEnv -> Parser Statement
-stmtP genv = defP genv <|> checkStmtP genv <|> fmap STerm (termWithG genv [])
+stmtP g = defP g <|> checkStmtP g <|> fmap STerm (twG g [])
 
 defP :: GlobalEnv -> Parser Statement
-defP genv = do
+defP g = do
     keyword "def"
     x <- name
-    -- optional type annotation
     mTy <- try $ do
         symbol ":"
-        termWithG genv []
+        twG g []
     symbol "="
-    val <- termWithG genv []
+    val <- twG g []
     return (SDef x mTy val)
 
 checkStmtP :: GlobalEnv -> Parser Statement
-checkStmtP genv = do
+checkStmtP g = do
     keyword "check"
-    x <- name
+    x  <- name
     symbol ":"
-    ty <- termWithG genv []
+    ty <- twG g []
     symbol "="
-    val <- termWithG genv []
+    val <- twG g []
     return (SCheck x ty val)
 
--- | termWith extended with GlobalEnv names as outermost bindings.
--- Global names are resolved to de Bruijn indices beyond the local env.
+-- | termWithG kept for any external callers; now just delegates to twG.
 termWithG :: GlobalEnv -> Env -> Parser Term
-termWithG genv localEnv = termWith fullEnv
-  where
-    -- Global names ordered innermost-first (most-recent = index 0 after locals)
-    globalNames = map (\(n,_,_) -> n) (reverse genv)
-    fullEnv     = localEnv ++ globalNames
+termWithG = twG
