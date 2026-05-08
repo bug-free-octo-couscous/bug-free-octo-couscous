@@ -170,11 +170,19 @@ parseTerm s =
 --   after locals).  All recursive calls go through twG/awG so globals are
 --   always visible.
 twG :: GlobalEnv -> Env -> Parser Term
-twG g env = lamG g env <|> plamG g env <|> piG g env <|> appG g env
+twG g env = lamG g env <|> functionG g env <|> plamG g env <|> piG g env <|> appG g env
 
 lamG :: GlobalEnv -> Env -> Parser Term
 lamG g env = do
     symbol "lambda_"
+    x    <- name
+    symbol "."
+    body <- twG g (x : env)
+    return (TAbs x body)
+
+functionG :: GlobalEnv -> Env -> Parser Term
+functionG g env = do
+    keyword "function"
     x    <- name
     symbol "."
     body <- twG g (x : env)

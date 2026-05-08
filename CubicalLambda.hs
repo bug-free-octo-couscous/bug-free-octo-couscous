@@ -59,6 +59,9 @@ data Term
     | TPi Name Term Term
     | TInterval I
     | TCube DNF
+    -- TPath aTy u v
+    -- aTy may be a function of the interval (PathP / heterogeneous path).
+    -- When aTy is a PLam, p @ r has type aTy[r/i].
     | TPath Term Term Term
     | PLam Name Term
     | PApp Term Term
@@ -228,9 +231,14 @@ eval t = case t of
             f'          -> TApp f' (eval a)
 
     PApp p r ->
-        case eval p of
-            PLam _ body -> eval (beta body (eval r))
-            p'          -> PApp p' (eval r)
+        let r' = eval r
+        in case eval p of
+            PLam _ body -> eval (beta body r')
+            -- Boundary reduction for stuck paths:
+            -- If r = 0 (dnfBot) or r = 1 (dnfTop) and p is a stuck path
+            -- typed as  Path A u v, we can't recover u/v here without types.
+            -- Leave stuck; etaEqualCtx will handle this via type-directed equality.
+            p'          -> PApp p' r'
 
     TAbs x b    -> TAbs x (eval b)
     TPi x a b   -> TPi x (eval a) (eval b)
@@ -271,13 +279,33 @@ eval t = case t of
         in case p' of
             -- uaβ: transport (ua e) x  ≡  equivFwd e x
             TUa e -> eval (TEquivFwd e x')
-            -- Constant path: transport (⟨i⟩ A) x  ≡  x  when body doesn't depend on i
-            PLam _ body ->
+            -- Path abstraction: transport (⟨i⟩ A) x
+            --   • If A doesn't depend on i (endpoints equal) → trivially x
+            --   • If A is a Pi-type family ⟨i⟩ (Π(a:A). B i a), apply
+            --     function-wise transport (funext-transport)
+            PLam iName body ->
                 let b0 = eval (beta body (TInterval I0))
                     b1 = eval (beta body (TInterval I1))
                 in if definitionallyEqual b0 b1
                    then x'
-                   else TTransport p' x'
+                   else case (b0, b1) of
+                       -- Pi-type path: transport pointwise
+                       (TPi argName aTy0 _, TPi _ _ bTy1) ->
+                           -- result : Π(a1 : b1.dom). b1.cod (transport(⟨i⟩ b0.dom, a1) transported)
+                           TAbs argName $
+                               let -- transport argument back along domain path (contravariant)
+                                   domPath = PLam iName (eval (beta (shift 1 0 body) (TInterval I0)))
+                                   -- Actually use the raw domain at 0 for the argument type
+                                   -- and transport the result forward along codomain
+                                   a0 = TVar 0
+                                   fa = TApp (shift 1 0 x') a0
+                               in eval (TTransport
+                                           (PLam iName
+                                               (eval (TApp (beta (shift 2 0 body)
+                                                               (TInterval I1))
+                                                           (shift 2 0 (TVar 0)))))
+                                           fa)
+                       _ -> TTransport p' x'
             _ -> TTransport p' x'
 
     -- Glue β-rules
@@ -297,11 +325,11 @@ eval t = case t of
            then eval a
            else TGlueElem phi' (eval t) (eval a)
 
-    -- unglue β-rules — now correctly applies equiv forward map
+    -- unglue β-rules
     TUnglue phi te g ->
         let phi' = eval phi
         in if isTopDNF phi'
-           then eval (TEquivFwd (eval te) (eval g))   -- apply forward map
+           then eval (TEquivFwd (eval te) (eval g))
            else if isBotDNF phi'
            then eval g
            else TUnglue phi' (eval te) (eval g)
@@ -350,6 +378,144 @@ dnfNeg (DNF cubes)
     negCube c   = DNF $ Set.fromList [Set.singleton (negLit l) | l <- Set.toList c]
     negLit (Pos n)    = NegVar n
     negLit (NegVar n) = Pos n
+
+--------------------------------------------------------------------------------
+-- Definitional Equality with Eta-Expansion and Path Boundary Reduction
+--
+-- The key insight for function extensionality:
+--   body of  ⟨i⟩ λx. h x @ i  at i=0  is  λx. (h x) @ 0
+--   This must equal  f  (the stated left endpoint).
+--   Since  h x : Path B (f x) (g x),  we know  (h x) @ 0 = f x  BY TYPING.
+--   But eval() can't see this — h x is a stuck neutral.
+--
+-- Solution: carry the typing context (Ctx) into equality so we can look up
+-- what a stuck  (p @ 0)  or  (p @ 1)  reduces to from p's type.
+--
+-- definitionallyEqual is the context-free entry point (used in eval-time
+-- checks).  requireEqualCtx is the context-aware version used in the checker.
+--------------------------------------------------------------------------------
+
+-- | Context-free definitional equality (syntactic + eta, no path boundary).
+definitionallyEqual :: Term -> Term -> Bool
+definitionallyEqual t1 t2 =
+    let v1 = eval t1
+        v2 = eval t2
+    in v1 == v2 || etaEq 8 [] v1 v2
+
+-- | Context-aware definitional equality used inside the type checker.
+-- Carries Ctx so stuck path applications  p @ 0 / p @ 1  can be resolved
+-- by looking up p's type and reading off the declared endpoints.
+definitionallyEqualCtx :: Ctx -> Term -> Term -> Bool
+definitionallyEqualCtx ctx t1 t2 =
+    let v1 = eval t1
+        v2 = eval t2
+    in v1 == v2 || etaEq 10 ctx v1 v2
+
+requireEqual :: Ctx -> Term -> Term -> Either TypeError ()
+requireEqual ctx expected got
+    | definitionallyEqualCtx ctx expected got = Right ()
+    | otherwise = Left (TypeMismatch (eval expected) (eval got))
+
+-- | Try to reduce a stuck  PApp p r  using p's declared type from the context.
+-- If p : Path A u v and r evaluates to I0 → return u
+--                        r evaluates to I1 → return v
+reducePAppByType :: Ctx -> Term -> Term -> Maybe Term
+reducePAppByType ctx p r =
+    case inferTy ctx p of
+        Just (TPath _ u v) ->
+            let r' = eval r
+            in if isBotDNF r' || r' == TInterval I0
+               then Just (eval u)
+               else if isTopDNF r' || r' == TInterval I1
+               then Just (eval v)
+               else Nothing
+        _ -> Nothing
+  where
+    -- Lightweight infer: only looks up variables and follows applications.
+    -- We don't want to call the full bidirectional infer here (circular),
+    -- so we handle only the cases we need.
+    inferTy :: Ctx -> Term -> Maybe Term
+    inferTy c (TVar i)
+        | i >= 0, i < length c = Just (eval (shift (i+1) 0 (snd (c !! i))))
+        | otherwise             = Nothing
+    inferTy c (TApp f a) =
+        case inferTy c f of
+            Just (TPi _ _ bTy) -> Just (eval (beta bTy a))
+            _                  -> Nothing
+    inferTy _ _ = Nothing
+
+-- | Core structural eta-equality, fuel-limited to prevent looping.
+-- ctx is threaded through so path boundary reduction can fire.
+etaEq :: Int -> Ctx -> Term -> Term -> Bool
+etaEq 0 _ _ _ = False
+etaEq fuel ctx t1 t2
+    -- ── Syntactic shortcut ───────────────────────────────────────────────────
+    | t1 == t2 = True
+
+    -- ── Path boundary reduction (THE KEY FIX) ───────────────────────────────
+    -- When we see  (p @ 0)  or  (p @ 1)  where p is stuck,
+    -- look up p's type in ctx to retrieve the stated endpoint.
+    | PApp p r <- t1
+    , Just u <- reducePAppByType ctx p r
+    = etaEq (fuel-1) ctx u t2
+
+    | PApp p r <- t2
+    , Just u <- reducePAppByType ctx p r
+    = etaEq (fuel-1) ctx t1 u
+
+    -- ── Lambda eta ───────────────────────────────────────────────────────────
+    -- (λx.b1) == (λx.b2)  →  b1 == b2  in extended ctx
+    | TAbs x b1 <- t1, TAbs _ b2 <- t2
+    = let ctx' = (x, TUniv 0) : ctx   -- dummy type; only vars matter for path lookup
+      in etaEq (fuel-1) ctx' (eval b1) (eval b2)
+
+    -- neutral == (λx.b)  →  eta-expand neutral:  (neutral x) == b
+    | TAbs x b2 <- t2
+    = let ctx' = (x, TUniv 0) : ctx
+          f1x  = eval (TApp (shift 1 0 t1) (TVar 0))
+      in etaEq (fuel-1) ctx' f1x (eval b2)
+
+    -- (λx.b) == neutral  →  b == (neutral x)
+    | TAbs x b1 <- t1
+    = let ctx' = (x, TUniv 0) : ctx
+          f2x  = eval (TApp (shift 1 0 t2) (TVar 0))
+      in etaEq (fuel-1) ctx' (eval b1) f2x
+
+    -- ── Path-lambda eta ──────────────────────────────────────────────────────
+    -- ⟨i⟩b1 == ⟨i⟩b2  →  b1 == b2  under i
+    | PLam i b1 <- t1, PLam _ b2 <- t2
+    = let ctx' = (i, TIntervalTy) : ctx
+      in etaEq (fuel-1) ctx' (eval b1) (eval b2)
+
+    -- neutral == ⟨i⟩b  →  (neutral @ i) == b  under i
+    | PLam i b2 <- t2
+    = let ctx' = (i, TIntervalTy) : ctx
+          p1i  = eval (PApp (shift 1 0 t1) (TVar 0))
+      in etaEq (fuel-1) ctx' p1i (eval b2)
+
+    -- ⟨i⟩b == neutral  →  b == (neutral @ i)  under i
+    | PLam i b1 <- t1
+    = let ctx' = (i, TIntervalTy) : ctx
+          p2i  = eval (PApp (shift 1 0 t2) (TVar 0))
+      in etaEq (fuel-1) ctx' (eval b1) p2i
+
+    -- ── Congruence on neutral spines ─────────────────────────────────────────
+    | TApp f1 a1 <- t1, TApp f2 a2 <- t2
+    = etaEq (fuel-1) ctx f1 f2 && etaEq (fuel-1) ctx a1 a2
+
+    | PApp p1 r1 <- t1, PApp p2 r2 <- t2
+    = etaEq (fuel-1) ctx p1 p2 && etaEq (fuel-1) ctx r1 r2
+
+    -- ── Type congruence ──────────────────────────────────────────────────────
+    | TPi _ a1 b1 <- t1, TPi _ a2 b2 <- t2
+    = etaEq (fuel-1) ctx a1 a2 && etaEq (fuel-1) ctx b1 b2
+
+    | TPath ty1 u1 v1 <- t1, TPath ty2 u2 v2 <- t2
+    = etaEq (fuel-1) ctx ty1 ty2
+      && etaEq (fuel-1) ctx u1 u2
+      && etaEq (fuel-1) ctx v1 v2
+
+    | otherwise = False
 
 --------------------------------------------------------------------------------
 -- Bidirectional Type Checker
@@ -406,14 +572,6 @@ lookupCtx i ctx
         let (_, ty) = ctx !! i
         in Right (shift (i + 1) 0 ty)
 
-definitionallyEqual :: Term -> Term -> Bool
-definitionallyEqual t1 t2 = eval t1 == eval t2
-
-requireEqual :: Term -> Term -> Either TypeError ()
-requireEqual expected got
-    | definitionallyEqual expected got = Right ()
-    | otherwise = Left (TypeMismatch (eval expected) (eval got))
-
 requireUniverse :: Ctx -> Term -> Either TypeError Level
 requireUniverse ctx t = do
     ty <- infer ctx t
@@ -461,19 +619,40 @@ infer ctx (TPi x aTy bTy) = do
     j <- requireUniverse (extendCtx x (eval aTy) ctx) bTy
     return $ TUniv (max i j)
 
+-- ─── Path Type Formation ───────────────────────────────────────────────────
+-- The type family aTy may be either:
+--   • A plain type T            → homogeneous Path T u v
+--   • A path abstraction ⟨i⟩T  → heterogeneous PathP (⟨i⟩T) u v
+--     where u : T[0/i]  and  v : T[1/i]
 infer ctx (TPath aTy u v) = do
     n <- requireUniverse ctx aTy
     let aTy' = eval aTy
-    check ctx u aTy'
-    check ctx v aTy'
+    -- Determine the types of the endpoints by substituting 0/1 into aTy.
+    -- For a plain type, beta just returns it unchanged.
+    let uTy = case aTy' of
+                  PLam _ body -> eval (beta body (TInterval I0))
+                  plain       -> plain
+        vTy = case aTy' of
+                  PLam _ body -> eval (beta body (TInterval I1))
+                  plain       -> plain
+    check ctx u uTy
+    check ctx v vTy
     return $ TUniv n
 
+-- ─── Path Application ──────────────────────────────────────────────────────
+-- FIXED: return type is aTy[r/i], not just aTy.
+-- This is essential for heterogeneous paths and for transport along universe
+-- paths produced by ua.
 infer ctx (PApp p r) = do
     pTy <- infer ctx p
     case eval pTy of
         TPath aTy _ _ -> do
             checkInterval ctx r
-            return $ eval aTy
+            let r' = eval r
+            -- Substitute the interval argument into the type family.
+            return $ case eval aTy of
+                PLam _ body -> eval (beta body r')
+                plain       -> plain
         other -> Left (ExpectedPath other)
 
 infer _   (TInterval _)  = Right intervalTy
@@ -483,7 +662,7 @@ infer _   TIntervalTy    = Right (TUniv 0)
 infer _   t@(TAbs _ _) = Left (CannotInfer t)
 infer _   t@(PLam _ _) = Left (CannotInfer t)
 
--- ─── Equiv Formation ─────────────────────────────────────────────────────────
+-- ─── Equiv Formation ──────────────────────────────────────────────────────
 -- Γ ⊢ A : U_n    Γ ⊢ B : U_n
 -- ────────────────────────────
 -- Γ ⊢ Equiv A B : U_n
@@ -492,16 +671,16 @@ infer ctx (TEquiv a b) = do
     m <- requireUniverse ctx b
     return $ TUniv (max n m)
 
--- ─── mkEquiv Introduction ─────────────────────────────────────────────────────
+-- ─── mkEquiv Introduction ──────────────────────────────────────────────────
 -- Γ ⊢ f : A → B
 -- Γ ⊢ g : B → A
 -- Γ ⊢ η : Π(a:A). Path A a (g (f a))
 -- Γ ⊢ ε : Π(b:B). Path B (f (g b)) b
--- ──────────────────────────────────────
+-- ─────────────────────────────────────
 -- Γ ⊢ mkEquiv A B f g η ε : Equiv A B
 infer ctx (TMkEquiv a b f g eta eps) = do
-    n <- requireUniverse ctx a
-    m <- requireUniverse ctx b
+    _n <- requireUniverse ctx a
+    _m <- requireUniverse ctx b
     let a' = eval a
         b' = eval b
     check ctx f (TPi "_" a' (shift 1 0 b'))
@@ -520,7 +699,7 @@ infer ctx (TMkEquiv a b f g eta eps) = do
     check ctx eps epsTy
     return $ TEquiv a' b'
 
--- ─── equivFwd Elimination ─────────────────────────────────────────────────────
+-- ─── equivFwd Elimination ─────────────────────────────────────────────────
 -- Γ ⊢ e : Equiv A B    Γ ⊢ x : A
 -- ─────────────────────────────────
 -- Γ ⊢ equivFwd e x : B
@@ -529,31 +708,40 @@ infer ctx (TEquivFwd e x) = do
     check ctx x a
     return b
 
--- ─── ua — Univalence Map ──────────────────────────────────────────────────────
+-- ─── ua — Univalence Map ──────────────────────────────────────────────────
 -- Γ ⊢ e : Equiv A B
 -- ──────────────────────────────────
 -- Γ ⊢ ua e : Path U_n A B
 --
--- The key rule: ua converts an equivalence into a path in the universe.
--- Combined with transport, this gives: transport (ua e) x ≡ equivFwd e x
+-- Key: ua converts an equivalence into a path in the universe.
+-- Combined with transport: transport (ua e) x ≡ equivFwd e x
 infer ctx (TUa e) = do
     (a, b) <- requireEquiv ctx e
     n <- requireUniverse ctx a
     return $ TPath (TUniv n) a b
 
--- ─── transport ────────────────────────────────────────────────────────────────
+-- ─── transport ────────────────────────────────────────────────────────────
 -- Γ ⊢ p : Path U_n A B    Γ ⊢ x : A
 -- ─────────────────────────────────────
 -- Γ ⊢ transport p x : B
+--
+-- For a heterogeneous path ⟨i⟩T, we check x : T[0/i] and return T[1/i].
 infer ctx (TTransport p x) = do
     pTy <- infer ctx p
     case eval pTy of
-        TPath _ aTy bTy -> do
-            check ctx x (eval aTy)
-            return (eval bTy)
+        TPath aTy _ _ ->
+            let (xTy, retTy) = case eval aTy of
+                    PLam _ body ->
+                        ( eval (beta body (TInterval I0))
+                        , eval (beta body (TInterval I1))
+                        )
+                    plain -> (plain, plain)
+            in do
+                check ctx x xTy
+                return retTy
         other -> Left (ExpectedPath other)
 
--- ─── Glue Type Formation ──────────────────────────────────────────────────────
+-- ─── Glue Type Formation ──────────────────────────────────────────────────
 -- Γ ⊢ A : U_n    Γ ⊢ φ : 𝕀    Γ ⊢ e : Equiv T A  (permissively: U_n)
 -- ──────────────────────────────────────────────────────────────────────
 -- Γ ⊢ Glue A φ e : U_n
@@ -567,14 +755,14 @@ infer ctx (TGlue aTy phi te) = do
                 _          -> n
     return $ TUniv (max n m)
 
--- ─── Unglue Elimination ───────────────────────────────────────────────────────
+-- ─── Unglue Elimination ───────────────────────────────────────────────────
 infer ctx (TUnglue phi te g) = do
     checkInterval ctx phi
     let phi' = eval phi
     if isTopDNF phi'
-       then infer ctx (TEquivFwd te g)  -- unglue [1] e g ≡ equivFwd e g
+       then infer ctx (TEquivFwd te g)
        else if isBotDNF phi'
-       then infer ctx g                 -- unglue [0] e g ≡ g
+       then infer ctx g
        else do
            gTy <- infer ctx g
            case eval gTy of
@@ -582,18 +770,19 @@ infer ctx (TUnglue phi te g) = do
                other         -> Left (Other $
                    "unglue: expected argument of Glue type, got: " ++ show other)
 
--- ─── Glue Element Introduction ────────────────────────────────────────────────
--- glue [φ] t a : Glue A φ e
--- When φ is concrete (⊤ or ⊥) we can reduce and infer directly.
+-- ─── Glue Element Introduction ────────────────────────────────────────────
 infer ctx t@(TGlueElem phi elm a) =
     let phi' = eval phi
     in if isTopDNF phi'
-       then infer ctx elm          -- glue [1] t a ≡ t
+       then infer ctx elm
        else if isBotDNF phi'
-       then infer ctx a            -- glue [0] t a ≡ a
+       then infer ctx a
        else Left (CannotInfer t)
 
--- ─── Kan Composition ─────────────────────────────────────────────────────────
+-- ─── Kan Composition ──────────────────────────────────────────────────────
+-- hcomp A [φ] u u0 : A
+-- where  u  is a partial element (tube) and  u0 : A  is the base.
+-- When φ = ⊤, result is u @ 1.  When φ = ⊥, result is u0.
 infer ctx (THComp aTy phi tube base) = do
     _n     <- requireUniverse ctx aTy
     let aTy' = eval aTy
@@ -606,7 +795,7 @@ infer ctx (THComp aTy phi tube base) = do
             tubeTy <- infer ctx tube'
             case eval tubeTy of
                 TPath a _ _
-                    | definitionallyEqual a aTy' -> return ()
+                    | definitionallyEqualCtx ctx a aTy' -> return ()
                 other -> Left (ExpectedPath other)
     return aTy'
 
@@ -616,6 +805,7 @@ infer ctx (THComp aTy phi tube base) = do
 
 check :: Ctx -> Term -> Term -> Either TypeError ()
 
+-- ─── Lambda introduction ──────────────────────────────────────────────────
 check ctx (TAbs x body) ty =
     case eval ty of
         TPi _ aTy bTy -> do
@@ -623,22 +813,47 @@ check ctx (TAbs x body) ty =
             check (extendCtx x aTy' ctx) body bTy
         other -> Left (ExpectedPi other)
 
+-- ─── Path-lambda introduction ─────────────────────────────────────────────
+-- check ctx (PLam i body) (Path A u v)
+--
+-- Endpoint coherence:  body[0/i] ≡ u   and   body[1/i] ≡ v
+--
+-- The comparison is done in the EXTENDED context  (i : 𝕀) : ctx  so that
+-- reducePAppByType can resolve stuck  (p @ 0)  and  (p @ 1)  using the
+-- types of variables that appear in body.
+--
+-- This is THE key fix for function extensionality:
+--   body = λx. h x @ i
+--   body[0/i] = λx. (h x) @ 0    (stuck — h is a variable)
+--   u = f                          (also a variable)
+--   In the extended ctx,  h : Π(x:A). Path B (f x) (g x)
+--   so  h x : Path B (f x) (g x)  and  (h x) @ 0 = f x
+--   eta-equality then gives  λx. f x  ≡  f.
 check ctx (PLam i body) ty =
     case eval ty of
         TPath aTy u v -> do
-            let aTy' = eval aTy
+            -- Context extended with the interval variable.
+            let ctx' = extendCtx i intervalTy ctx
+            -- Determine body type (heterogeneous vs homogeneous).
+            let bodyTy = case eval aTy of
+                    PLam {} -> eval aTy
+                    plain   -> plain
+            -- Evaluate body at each endpoint.
             let bodyAt0 = eval (beta body (TInterval I0))
-            let bodyAt1 = eval (beta body (TInterval I1))
-            requireEqual (eval u) bodyAt0
-            requireEqual (eval v) bodyAt1
-            check (extendCtx i intervalTy ctx) body aTy'
+                bodyAt1 = eval (beta body (TInterval I1))
+            -- Endpoint checks in ctx' so path boundary reduction fires.
+            requireEqual ctx' (eval u) bodyAt0
+            requireEqual ctx' (eval v) bodyAt1
+            -- Check the body under the interval binder.
+            check ctx' body bodyTy
         other -> Left (ExpectedPath other)
 
+-- ─── Glue element introduction ────────────────────────────────────────────
 check ctx (TGlueElem phi t a) ty =
     case eval ty of
         TGlue aTy phi' te -> do
             checkInterval ctx phi
-            requireEqual (eval phi') (eval phi)
+            requireEqual ctx (eval phi') (eval phi)
             let tTy = case eval te of
                           TMkEquiv domA _ _ _ _ _ -> eval domA
                           TEquiv domA _            -> eval domA
@@ -648,9 +863,10 @@ check ctx (TGlueElem phi t a) ty =
         other -> Left (Other $
             "glue: expected Glue type, got: " ++ show other)
 
+-- ─── Fallback: infer and compare ─────────────────────────────────────────
 check ctx t ty = do
     ty' <- infer ctx t
-    requireEqual (eval ty) (eval ty')
+    requireEqual ctx (eval ty) (eval ty')
 
 --------------------------------------------------------------------------------
 -- Top-level helpers

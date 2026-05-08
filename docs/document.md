@@ -14,7 +14,7 @@ well-formed term without hitting a parse error.
 4. [Unicode symbols you need](#4-unicode-symbols)
 5. [Interval expressions](#5-interval-expressions)
 6. [Term grammar — the big picture](#6-term-grammar)
-7. [Binders — λ, Π, ⟨⟩](#7-binders)
+7. [Binders — lambda, PI, {}](#7-binders)
 8. [Application and path application](#8-application-and-path-application)
 9. [Atoms — the building blocks](#9-atoms)
 10. [The parenthesisation rule](#10-the-parenthesisation-rule)
@@ -36,10 +36,10 @@ well-formed term without hitting a parse error.
 | Interval pseudo-type | `𝕀` |
 | Interval endpoint | `0` or `1` |
 | Interval variable | `i0` `i1` `i2` … |
-| Lambda | `lambda_x. body` |
+| Lambda | `lambda_x. body` or `function x. body` |
 | Dependent product | `PI(x:A). B` |
 | Path type | `Path A u v` |
-| Path abstraction | `⟨i⟩ body` |
+| Path abstraction | `{i} body` |
 | Path application | `t @ r` |
 | Kan composition | `hcomp A [φ] u u0` |
 | Glue type | `Glue A [φ] e` |
@@ -71,7 +71,7 @@ own (e.g. a bare lambda).
 
 ```
 def myBool : U0 = U0
-def id : Π(x:U0). U0 = λx. x
+def id : PI(x:U0). U0 = lambda_x. x
 ```
 
 #### `def x = e` — define with inferred type
@@ -89,7 +89,7 @@ Verifies `e : T` and reports success or failure, but does **not** add anything t
 the environment. Useful for assertions and tests.
 
 ```
-check myLemma : Path U1 U0 U0 = ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))
+check myLemma : Path U1 U0 U0 = ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))
 ```
 
 #### `<term>` — bare term (infer only)
@@ -99,7 +99,7 @@ and printed. Nothing is added to the environment.
 
 ```
 U0                          -- infers U1
-Π(A:U0). Π(x:A). A         -- infers U1
+PI(A:U0). PI(x:A). A         -- infers U1
 ```
 
 ### Comments and blank lines
@@ -130,10 +130,10 @@ and reuse them across many subsequent lines.
 
 ```
 -- Old style — everything inline, hard to read:
-transport (ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))) U0
+transport (ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))) U0
 
 -- New style — build up in named steps:
-def idEquiv = mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+def idEquiv = mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)
 def uaPath  = ua idEquiv
 transport uaPath U0
 ```
@@ -177,22 +177,21 @@ between tokens. You can add as much spacing as you like for readability.
 
 ---
 
-## 4. Unicode symbols
+## 4. Special symbols and keywords
 
-You will need to type these characters. Most editors let you insert them via
-copy-paste or a Unicode input method.
+The parser uses a mix of ASCII keywords and a small number of Unicode characters.
 
-| Symbol | Codepoint | What it does |
+| Token | Kind | What it does |
 |:---:|---|---|
-| `λ` | U+03BB | Starts a lambda abstraction |
-| `Π` | U+03A0 | Starts a dependent product |
-| `⟨` | U+27E8 | Opens a path abstraction binder |
-| `⟩` | U+27E9 | Closes a path abstraction binder |
-| `𝕀` | U+1D540 | The interval pseudo-type |
-| `@` | U+0040 | Path application operator |
-| `∧` | U+2227 | Interval meet (and) |
-| `∨` | U+2228 | Interval join (or) |
-| `¬` | U+00AC | Interval negation (not) |
+| `𝕀` | Unicode U+1D540 (or keyword `TIntervalTy`) | The interval pseudo-type |
+| `@` | ASCII | Path application operator |
+| `lambda_` | ASCII keyword | Starts a lambda abstraction (note trailing underscore) |
+| `function` | ASCII keyword | Alternative lambda syntax |
+| `PI` | ASCII keyword | Starts a dependent product |
+| `{` … `}` | ASCII | Encloses a path abstraction binder variable |
+| `or` | ASCII keyword | Interval join (∨) |
+| `and` | ASCII keyword | Interval meet (∧) |
+| `not_` | ASCII keyword | Interval negation (¬) (note trailing underscore) |
 
 ---
 
@@ -213,27 +212,27 @@ i0  i1  i2  -- named interval variables (i followed by one or more digits)
 
 ### Operators — precedence low → high
 
-| Operator | Symbol | Meaning | Associativity |
+| Operator | Keyword | Meaning | Associativity |
 |---|:---:|---|---|
-| Join | `∨` | logical or / union of faces | left |
-| Meet | `∧` | logical and / intersection of faces | left |
-| Negation | `¬` | flip the face | right (prefix) |
+| Join | `or` | logical or / union of faces | left |
+| Meet | `and` | logical and / intersection of faces | left |
+| Negation | `not_` | flip the face | right (prefix) |
 
-So `¬i0 ∧ i1 ∨ i2` parses as `((¬i0) ∧ i1) ∨ i2`.
+So `not_ i0 and i1 or i2` parses as `((not_ i0) and i1) or i2`.
 
 ### Examples
 
 ```
-[i0]            -- the bottom face  → hcomp reduces to the base
-[i1]            -- the top face     → hcomp reduces to tube@1
-[i0 ∨ i1]      -- union of two faces
-[i0 ∧ ¬i1]     -- intersection with a negated face
+[i0]                -- the bottom face  → hcomp reduces to the base
+[i1]                -- the top face     → hcomp reduces to tube@1
+[i0 or i1]         -- union of two faces
+[i0 and not_ i1]   -- intersection with a negated face
 ```
 
 From the test suite:
 ```
-hcomp U1 [i0] ⟨i⟩ U0 U0   -- phi = 0, so hcomp returns the cap U0
-hcomp U1 [i1] ⟨i⟩ U0 U0   -- phi = 1, so hcomp returns tube@1 = U0
+hcomp U1 [i0] {i} U0 U0   -- phi = 0, so hcomp returns the cap U0
+hcomp U1 [i1] {i} U0 U0   -- phi = 1, so hcomp returns tube@1 = U0
 Glue  U0 [i0] U0            -- phi = 0, so Glue reduces to the base type U0
 Glue  U0 [i1] U0            -- phi = 1, so Glue reduces to the fibre U0
 ```
@@ -252,10 +251,11 @@ stmt  ::=  def <name> : term = term      -- define with explicit type
         |  term                          -- bare term: infer and print type
 
 -- Terms
-term  ::=  λx. term                         -- lambda abstraction
-        |  ⟨x⟩ term                         -- path abstraction
-        |  Π(x : term). term                -- dependent product
-        |  app                              -- application spine
+term  ::=  lambda_x. term                      -- lambda abstraction
+        |  function x. term                    -- lambda abstraction (alternate)
+        |  {x} term                            -- path abstraction
+        |  PI(x : term). term                  -- dependent product
+        |  app                                 -- application spine
 
 app   ::=  atom ( @ atom                    -- path application  (left-assoc)
                 | atom                      -- function application (left-assoc)
@@ -292,55 +292,57 @@ path abstraction), then against the accumulated global environment from prior
 
 ## 7. Binders
 
-### Lambda abstraction — `λx. body`
+### Lambda abstraction — `lambda_x. body` / `function x. body`
 
 ```
-λx. body
+lambda_x. body
+function x. body
 ```
 
-- `λ` followed by a name, then `.`, then the body (which is a full `term`).
-- The body extends as far right as possible — `λx. λy. x` is `λx. (λy. x)`,
-  not `(λx. λy) x`.
+- `lambda_` (with a trailing underscore) followed by a name, then `.`, then the body.
+- `function` is an equivalent alternative keyword (no underscore, space before the name).
+- The body extends as far right as possible — `lambda_x. lambda_y. x` is `lambda_x. (lambda_y. x)`,
+  not `(lambda_x. lambda_y) x`.
 
 ```
-λA. λx. x          -- identity function (taking type then value)
-λf. λg. λx. f (g x) -- function composition
+lambda_A. lambda_x. x          -- identity function (taking type then value)
+lambda_f. lambda_g. lambda_x. f (g x)  -- function composition
 ```
 
-### Dependent product — `Π(x:A). B`
+### Dependent product — `PI(x:A). B`
 
 ```
-Π(x : A). B
+PI(x : A). B
 ```
 
-- `Π` followed by a binder in parentheses `(x : A)`, then `.`, then the result
+- `PI` (upper-case) followed by a binder in parentheses `(x : A)`, then `.`, then the result
   type `B`.
 - The domain `A` and codomain `B` are full terms.
 - Binders nest naturally:
 
 ```
 -- from the test suite:
-Π(A:U0). Π(x:A). A                                -- the type of the identity function
-Π(A:U0). Π(B:U0). Π(C:U0). Π(f:Π(x:B).C). Π(g:Π(x:A).B). Π(x:A). C
+PI(A:U0). PI(x:A). A                                -- the type of the identity function
+PI(A:U0). PI(B:U0). PI(C:U0). PI(f:PI(x:B).C). PI(g:PI(x:A).B). PI(x:A). C
                                                    -- function composition type
-Π(f:Π(x:U0).U0). U1                               -- Pi over a function type
-Π(p:Path U1 U0 U0). U1                            -- Pi whose domain is a Path type
-Π(e:Equiv U0 U0). Path U1 U0 U0                   -- Pi whose domain is an Equiv type
+PI(f:PI(x:U0).U0). U1                              -- Pi over a function type
+PI(p:Path U1 U0 U0). U1                            -- Pi whose domain is a Path type
+PI(e:Equiv U0 U0). Path U1 U0 U0                   -- Pi whose domain is an Equiv type
 ```
 
-### Path abstraction — `⟨i⟩ body`
+### Path abstraction — `{i} body`
 
 ```
-⟨i⟩ body
+{i} body
 ```
 
-- The angle brackets `⟨⟩` (U+27E8 / U+27E9) contain the interval variable name.
+- Curly braces `{}` contain the interval variable name.
 - The body is a full `term`.
-- Used to introduce an element of a `Path` type: `⟨i⟩ t` has type `Path A t[0] t[1]`
+- Used to introduce an element of a `Path` type: `{i} t` has type `Path A t[0] t[1]`
   when `t : A` for all interval values of `i`.
 
 ```
-⟨i⟩ U0              -- constant path on U0; used as the tube argument in hcomp
+{i} U0              -- constant path on U0; used as the tube argument in hcomp
 ```
 
 ---
@@ -427,10 +429,10 @@ A name resolves to a value at parse time. The resolver checks first against
 **global environment** built up from preceding `def` statements.
 
 ```
-Π(A:U0). Π(x:A). A     -- the final A refers to the outer Π binder
+PI(A:U0). PI(x:A). A     -- the final A refers to the outer Π binder
 
 def Nat = U0            -- Nat is now a global name
-Π(n:Nat). Nat           -- Nat resolves to U0 from the global env
+PI(n:Nat). Nat           -- Nat resolves to U0 from the global env
 ```
 
 If a name is not in scope either locally or globally, the parser fails with
@@ -455,7 +457,7 @@ Path U1 U0 U0
 Path U2 (Path U1 U0 U0) (Path U1 U0 U0)
 
 -- ✅ OK — Pi whose domain is a Path type, parenthesised
-Π(p:Path U1 U0 U0). U1
+PI(p:Path U1 U0 U0). U1
 
 -- ❌ Would fail — Path used as argument without parens
 Path U2 Path U1 U0 U0 Path U1 U0 U0
@@ -469,13 +471,13 @@ The same rule applies to the equivalence and univalence constructs:
 Equiv U0 U0
 
 -- ✅ Equiv as an argument — must be parenthesised
-Π(e : (Equiv U0 U0)). Path U1 U0 U0
+PI(e : (Equiv U0 U0)). Path U1 U0 U0
 
 -- ✅ ua is the head — no parens needed
-ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))
+ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))
 
 -- ✅ ua result as an argument — must be parenthesised
-transport (ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))) U0
+transport (ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))) U0
 ```
 
 Inside parentheses, the **full** term grammar is active again, so you can nest
@@ -500,7 +502,7 @@ Path U2 U1 U1           -- a path between U1 and U1 in U2
 Path U2 (Path U1 U0 U0) (Path U1 U0 U0)   -- path of paths
 
 -- dependent: A is a variable
-Π(A:U1). Π(B:U1). Path U1 A A
+PI(A:U1). PI(B:U1). Path U1 A A
 ```
 
 ### `hcomp A [φ] u u0` — Kan composition
@@ -513,16 +515,16 @@ hcomp  <type>  [<face>]  <tube>  <cap>
 |---|---|---|
 | `A` | atom | The type to compose in |
 | `[φ]` | `[` interval expr `]` | The constraint face |
-| `u` | bare `⟨i⟩ atom`, `( term )`, or atom | The tube — a path open on one side |
+| `u` | bare `{i} atom`, `( term )`, or atom | The tube — a path open on one side |
 | `u0` | atom | The cap — the base element |
 
 The tube `u` has a special parsing rule: you can write it as a bare path
-abstraction `⟨i⟩ atom` without parentheses, but then the body must be a
-single atom (not a compound term). For compound tube bodies, use `(⟨i⟩ body)`.
+abstraction `{i} atom` without parentheses, but then the body must be a
+single atom (not a compound term). For compound tube bodies, use `({i} body)`.
 
 ```
-hcomp U1 [i0] ⟨i⟩ U0 U0     -- phi=0: reduces to cap U0
-hcomp U1 [i1] ⟨i⟩ U0 U0     -- phi=1: reduces to tube@1 = U0
+hcomp U1 [i0] {i} U0 U0     -- phi=0: reduces to cap U0
+hcomp U1 [i1] {i} U0 U0     -- phi=1: reduces to tube@1 = U0
 ```
 
 **β-reduction behaviour:**
@@ -602,7 +604,7 @@ The type of equivalences from `A` to `B`. Both arguments are atoms.
 ```
 Equiv U0 U0          -- type of self-equivalences of U0; lives in U1
 Equiv U0 U1          -- equivalences from U0 to U1; lives in U2
-Π(e : (Equiv U0 U0)). Path U1 U0 U0    -- Pi over an equivalence
+PI(e : (Equiv U0 U0)). Path U1 U0 U0    -- Pi over an equivalence
 ```
 
 **Typing rule:** If `A : U_n` and `B : U_n` then `Equiv A B : U_n`.
@@ -619,23 +621,23 @@ mkEquiv  <A>  <B>  <f>  <g>  <η>  <ε>
 | `B` | atom | Codomain type |
 | `f` | `( term )` or atom | Forward map `f : A → B` |
 | `g` | `( term )` or atom | Backward map `g : B → A` |
-| `η` | `( term )` or atom | Left homotopy `η : Π(a:A). Path A a (g (f a))` |
-| `ε` | `( term )` or atom | Right homotopy `ε : Π(b:B). Path B (f (g b)) b` |
+| `η` | `( term )` or atom | Left homotopy `η : PI(a:A). Path A a (g (f a))` |
+| `ε` | `( term )` or atom | Right homotopy `ε : PI(b:B). Path B (f (g b)) b` |
 
 The checker verifies that `f`, `g`, `η`, and `ε` all have the correct dependent
 types. The result has type `Equiv A B`.
 
-**The identity equivalence on `A`** (where `f = g = λx.x` and both homotopies
+**The identity equivalence on `A`** (where `f = g = lambda_x.x` and both homotopies
 are constant paths):
 
 ```
-mkEquiv A A (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+mkEquiv A A (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)
 ```
 
 As a closed term at `A = U0`:
 
 ```
-mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)
 ```
 
 Because `f`, `g`, `η`, and `ε` are almost always compound lambda terms, they
@@ -651,8 +653,8 @@ Applies the forward map of equivalence `e : Equiv A B` to an element `x : A`,
 producing a result of type `B`.
 
 ```
-equivFwd (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)) U0
--- reduces to (λx. x) U0  =  U0
+equivFwd (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)) U0
+-- reduces to (lambda_x. x) U0  =  U0
 ```
 
 **β-rule:** `equivFwd (mkEquiv A B f g η ε) x  ≡  f x`
@@ -662,11 +664,11 @@ Because `mkEquiv` takes six arguments it almost always needs parentheses:
 
 ```
 -- ✅ Correct
-equivFwd (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)) U0
+equivFwd (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)) U0
 
 -- ❌ Wrong — parser will try to treat mkEquiv as the atom for equivFwd,
 --    then fail because mkEquiv expects more arguments
-equivFwd mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b) U0
+equivFwd mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b) U0
 ```
 
 ### `ua e` — the univalence map
@@ -680,7 +682,7 @@ the universe. This is the **univalence axiom** — the claim that equivalent typ
 are identical (as a path in the universe).
 
 ```
-ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))
+ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))
 -- : Path U1 U0 U0
 ```
 
@@ -703,7 +705,7 @@ an element `transport p x : B` by coercing `x` along `p`.
 
 ```
 transport (ua e) x      -- transport along a univalence path
-transport (⟨i⟩ U0) x   -- transport along a constant path — reduces to x
+transport ({i} U0) x   -- transport along a constant path — reduces to x
 ```
 
 **β-rules:**
@@ -711,17 +713,17 @@ transport (⟨i⟩ U0) x   -- transport along a constant path — reduces to x
 | Condition | Reduction |
 |---|---|
 | `p = ua e` | `transport (ua e) x  ≡  equivFwd e x` &nbsp;&nbsp; **(uaβ — the key univalence computation)** |
-| `p = ⟨i⟩ A` and body is constant | `transport (⟨i⟩ A) x  ≡  x` |
+| `p = {i} A` and body is constant | `transport ({i} A) x  ≡  x` |
 
 The uaβ rule is the computational heart of univalence: transporting along a
 `ua` path *computes* by applying the forward map of the equivalence.
 
 ```
--- Suppose e = mkEquiv U0 U0 (λx. x) ...
+-- Suppose e = mkEquiv U0 U0 (lambda_x. x) ...
 -- Then:
 transport (ua e) U0
   ≡  equivFwd e U0        -- by uaβ
-  ≡  (λx. x) U0           -- by equivFwd β
+  ≡  (lambda_x. x) U0           -- by equivFwd β
   ≡  U0                   -- by λ β
 ```
 
@@ -731,27 +733,27 @@ parentheses:
 
 ```
 -- ✅ Correct
-transport (ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))) U0
+transport (ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))) U0
 
 -- ❌ Wrong — ua is seen as an atom, then mkEquiv ... is extra leftover
-transport ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)) U0
+transport ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)) U0
 ```
 
 ### Putting it together — a worked univalence example
 
 ```
 -- Step 1: build the identity equivalence on U0
-mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)
 -- : Equiv U0 U0
 
 -- Step 2: turn it into a path in U1
-ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))
+ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))
 -- : Path U1 U0 U0
 
 -- Step 3: transport U0 along that path — should give back U0
-transport (ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))) U0
+transport (ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))) U0
 -- reduces by uaβ to:  equivFwd (mkEquiv ...) U0
--- reduces by equivFwd β to:  (λx. x) U0
+-- reduces by equivFwd β to:  (lambda_x. x) U0
 -- reduces by λ β to:  U0
 ```
 
@@ -780,10 +782,10 @@ to reuse a term on a later line, you must use `def`.
 
 ```
 -- ❌ This does NOT make idEquiv available later
-mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)
 
 -- ✅ This does
-def idEquiv = mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+def idEquiv = mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)
 transport (ua idEquiv) U0    -- idEquiv is in scope here
 ```
 
@@ -793,11 +795,11 @@ The type checker cannot infer the type of a lambda without a hint. Always
 provide `: T` in the `def` header, or embed the lambda inside a typed expression.
 
 ```
--- ❌ Wrong — cannot infer type of λx. x
-def myId = λx. x
+-- ❌ Wrong — cannot infer type of lambda_x. x
+def myId = lambda_x. x
 
 -- ✅ Correct — type given explicitly
-def myId : Π(x:U0). U0 = λx. x
+def myId : PI(x:U0). U0 = lambda_x. x
 ```
 
 ### Confusing `def` and `check`
@@ -817,10 +819,10 @@ myLemma                                        -- ✅ works
 
 ```
 -- ❌ Wrong
-hcomp U1 i0 ⟨i⟩ U0 U0
+hcomp U1 i0 {i} U0 U0
 
 -- ✅ Correct
-hcomp U1 [i0] ⟨i⟩ U0 U0
+hcomp U1 [i0] {i} U0 U0
 ```
 
 The face argument of `hcomp`, `Glue`, `glue`, and `unglue` is **always** written
@@ -840,10 +842,10 @@ This applies equally to `Equiv`, `ua`, `mkEquiv`, `equivFwd`, and `transport`:
 
 ```
 -- ❌ Wrong — ua is an atom here; mkEquiv ... becomes leftover tokens
-transport ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)) U0
+transport ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)) U0
 
 -- ✅ Correct
-transport (ua (mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b))) U0
+transport (ua (mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b))) U0
 ```
 
 ### Confusing interval literals with names
@@ -877,24 +879,24 @@ equivFwd e x
 ### Writing nested binders in Pi without re-wrapping
 
 ```
--- ✅ Correct — each Π has its own (x:A). part
-Π(A:U0). Π(x:A). A
+-- ✅ Correct — each PI has its own (x:A). part
+PI(A:U0). PI(x:A). A
 
--- ❌ Wrong — Π(A:U0)(x:A) is not valid syntax
-Π(A:U0)(x:A). A
+-- ❌ Wrong — PI(A:U0)(x:A) is not valid syntax
+PI(A:U0)(x:A). A
 ```
 
 ### Tube body in hcomp consuming the cap
 
-If you write a bare `⟨i⟩ <term>` as the tube, the body is **one atom** only.
+If you write a bare `{i} <term>` as the tube, the body is **one atom** only.
 For a compound body, use parentheses:
 
 ```
 -- ✅ Body is the single atom U0; u0 is the next atom U0
-hcomp U1 [i0] ⟨i⟩ U0 U0
+hcomp U1 [i0] {i} U0 U0
 
 -- ✅ Compound tube body wrapped in parens; u0 is still U0
-hcomp U1 [i0] (⟨i⟩ Path U1 U0 U0) U0
+hcomp U1 [i0] ({i} Path U1 U0 U0) U0
 ```
 
 ### Forgetting that mkEquiv needs six arguments
@@ -905,11 +907,11 @@ type mismatch or `CannotInfer` if the count is wrong.
 
 ```
 -- ✅ All six arguments present
-mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a) (lambda_b. {i} b)
 --       A    B    f             g             η              ε
 
 -- ❌ Missing ε — parser will try to read the next token as ε and likely fail
-mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a)
+mkEquiv U0 U0 (lambda_x. x) (lambda_x. x) (lambda_a. {i} a)
 ```
 
 ---
