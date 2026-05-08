@@ -48,7 +48,7 @@ id TIntervalTy
 -- ------------------------------------------------------------
 
 -- Constant path on U0
-def constPath : Path U1 U0 U0 = ⟨i⟩ U0
+def constPath : Path U1 U0 U0 = {i} U0
 
 -- Path endpoint reduction via @
 constPath @ 0
@@ -73,13 +73,13 @@ i1
 -- ------------------------------------------------------------
 
 -- phi = 0: reduces to cap U0
-hcomp U1 [0] ⟨i⟩ U0 U0
+hcomp U1 [0] {i} U0 U0
 
 -- phi = 1: reduces to tube@1 = U0
-hcomp U1 [1] ⟨i⟩ U0 U0
+hcomp U1 [1] {i} U0 U0
 
 -- phi = i0: stuck (free variable), type is U1
-hcomp U1 [i0] ⟨i⟩ U0 U0
+hcomp U1 [i0] {i} U0 U0
 
 
 -- ------------------------------------------------------------
@@ -90,7 +90,7 @@ hcomp U1 [i0] ⟨i⟩ U0 U0
 def SelfEquiv = Equiv U0 U0
 
 -- The identity equivalence on U0
-def idEquiv : Equiv U0 U0 = mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a) (λb. ⟨i⟩ b)
+def idEquiv : Equiv U0 U0 = mkEquiv U0 U0 (λx. x) (λx. x) (λa. {i} a) (λb. {i} b)
 
 -- Bare infer: should give Equiv U0 U0
 idEquiv
@@ -179,7 +179,7 @@ def myType = U0
 -- check shouldFail : U1 = U0
 
 -- Missing ε in mkEquiv:
--- mkEquiv U0 U0 (λx. x) (λx. x) (λa. ⟨i⟩ a)
+-- mkEquiv U0 U0 (λx. x) (λx. x) (λa. {i} a)
 
 -- Lambda without annotation (CannotInfer):
 -- def badDef = λx. x

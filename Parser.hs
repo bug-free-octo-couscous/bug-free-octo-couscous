@@ -98,7 +98,7 @@ brackets :: Parser a -> Parser a
 brackets p = symbol "[" *> p <* symbol "]"
 
 angles :: Parser a -> Parser a
-angles p = symbol "\10216" *> p <* symbol "\10217"
+angles p = symbol "{" *> p <* symbol "}"
 
 --------------------------------------------------------------------------------
 -- Interval expression parser
@@ -120,7 +120,7 @@ iJoin = do
     go l
   where
     go acc = do
-        mv <- try (symbol "\8744")
+        mv <- try (symbol "or")
         case mv of
             Nothing -> return acc
             Just () -> iMeet >>= \r -> go (Join acc r)
@@ -131,7 +131,7 @@ iMeet = do
     go l
   where
     go acc = do
-        mv <- try (symbol "\8743")
+        mv <- try (symbol "and")
         case mv of
             Nothing -> return acc
             Just () -> iNeg >>= \r -> go (Meet acc r)
