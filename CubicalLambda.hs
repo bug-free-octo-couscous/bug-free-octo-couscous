@@ -444,6 +444,27 @@ reducePAppByType ctx p r =
             _                  -> Nothing
     inferTy _ _ = Nothing
 
+-- | Extract the domain type of a lambda-like term for context extension.
+-- We try to infer the Pi-type of the *other* term (the neutral) so that
+-- reducePAppByType can fire later. Falls back to TUniv 0 if unavailable.
+inferLamDom :: Ctx -> Term -> Term -> Term
+inferLamDom ctx (TAbs _ _) neutral =
+    case inferNeutralTy ctx neutral of
+        Just (TPi _ domTy _) -> eval domTy
+        _                    -> TUniv 0
+inferLamDom _ _ _ = TUniv 0
+
+-- | Lightweight neutral type inference (no full bidirectional checker).
+inferNeutralTy :: Ctx -> Term -> Maybe Term
+inferNeutralTy ctx (TVar i)
+    | i >= 0, i < length ctx = Just (eval (shift (i+1) 0 (snd (ctx !! i))))
+    | otherwise               = Nothing
+inferNeutralTy ctx (TApp f a) =
+    case inferNeutralTy ctx f of
+        Just (TPi _ _ bTy) -> Just (eval (beta bTy a))
+        _                  -> Nothing
+inferNeutralTy _ _ = Nothing
+
 -- | Core structural eta-equality, fuel-limited to prevent looping.
 -- ctx is threaded through so path boundary reduction can fire.
 etaEq :: Int -> Ctx -> Term -> Term -> Bool
@@ -466,19 +487,22 @@ etaEq fuel ctx t1 t2
     -- ── Lambda eta ───────────────────────────────────────────────────────────
     -- (λx.b1) == (λx.b2)  →  b1 == b2  in extended ctx
     | TAbs x b1 <- t1, TAbs _ b2 <- t2
-    = let ctx' = (x, TUniv 0) : ctx   -- dummy type; only vars matter for path lookup
+    = let domTy = inferLamDom ctx t1 t2
+          ctx'  = (x, domTy) : ctx
       in etaEq (fuel-1) ctx' (eval b1) (eval b2)
 
     -- neutral == (λx.b)  →  eta-expand neutral:  (neutral x) == b
     | TAbs x b2 <- t2
-    = let ctx' = (x, TUniv 0) : ctx
-          f1x  = eval (TApp (shift 1 0 t1) (TVar 0))
+    = let domTy = inferLamDom ctx t2 t1
+          ctx'  = (x, domTy) : ctx
+          f1x   = eval (TApp (shift 1 0 t1) (TVar 0))
       in etaEq (fuel-1) ctx' f1x (eval b2)
 
     -- (λx.b) == neutral  →  b == (neutral x)
     | TAbs x b1 <- t1
-    = let ctx' = (x, TUniv 0) : ctx
-          f2x  = eval (TApp (shift 1 0 t2) (TVar 0))
+    = let domTy = inferLamDom ctx t1 t2
+          ctx'  = (x, domTy) : ctx
+          f2x   = eval (TApp (shift 1 0 t2) (TVar 0))
       in etaEq (fuel-1) ctx' (eval b1) f2x
 
     -- ── Path-lambda eta ──────────────────────────────────────────────────────
