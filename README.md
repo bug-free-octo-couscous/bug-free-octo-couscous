@@ -3,7 +3,7 @@ changed
 ```text
 Π -> PI
 λ -> lambda_
-¬ -> not
+¬ -> not_
 ∧ -> and
 ∨ -> or
 ⟨ -> {

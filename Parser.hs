@@ -137,7 +137,7 @@ iMeet = do
             Just () -> iNeg >>= \r -> go (Meet acc r)
 
 iNeg :: Parser I
-iNeg = (symbol "not" *> fmap Neg iNeg)
+iNeg = (symbol "not_" *> fmap Neg iNeg)
     <|> iAtom
 
 iAtom :: Parser I
