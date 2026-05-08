@@ -194,12 +194,42 @@ infer ctx (TTransport p x) = do
 
 infer ctx (TGlue aTy phi te) = do
     n   <- requireUniverse ctx aTy
+    let aTy' = eval aTy
     checkInterval ctx phi
     teTy <- infer ctx te
-    let m = case eval teTy of
-                TUniv k    -> k
-                TEquiv _ _ -> n
-                _          -> n
+    m <- case eval teTy of
+        -- te is itself a universe (a type being glued directly):
+        -- just take its level.
+        TUniv k -> return k
+
+        -- te : Equiv A B  — the main case.
+        -- 1. Extract A and B from the equivalence type.
+        -- 2. Verify B ≡ aTy (the codomain must match the base type).
+        -- 3. Derive the level from A and B properly.
+        TEquiv a b -> do
+            let a' = eval a
+                b' = eval b
+            -- Coherence: the codomain of the equivalence must be the base type.
+            requireEqual ctx b' aTy'
+            -- Get levels of A and B by checking them as types.
+            p <- requireUniverse ctx a'
+            q <- requireUniverse ctx b'
+            return (max p q)
+
+        -- te : TMkEquiv a b f g eta eps inlined as a term (already evaluated):
+        -- extract domain/codomain directly.
+        TMkEquiv a b _ _ _ _ -> do
+            let a' = eval a
+                b' = eval b
+            requireEqual ctx b' aTy'
+            p <- requireUniverse ctx a'
+            q <- requireUniverse ctx b'
+            return (max p q)
+
+        other ->
+            Left (Other $
+                "Glue: equivalence argument has unexpected type: "
+                ++ show other)
     return $ TUniv (max n m)
 
 infer ctx (TUnglue phi te g) = do
@@ -226,15 +256,32 @@ infer ctx (THComp aTy phi tube base) = do
     _ <- requireUniverse ctx aTy
     let aTy' = eval aTy
     checkInterval ctx phi
+    -- 1. base must have type A
     check ctx base aTy'
-    case eval tube of
-        PLam i body ->
-            check (extendCtx i intervalTy ctx) body aTy'
+    -- 2. Check the tube and enforce the boundary condition tube @ 0 ≡ base
+    _ <- case eval tube of
+        PLam i body -> do
+            -- The tube body lives under a fresh interval variable i : 𝕀.
+            -- A must be shifted so its de Bruijn indices are valid in the
+            -- extended context.
+            let ctx'  = extendCtx i intervalTy ctx
+                aTy'S = shift 1 0 aTy'
+            check ctx' body aTy'S
+            -- Boundary check: (tube @ 0) must be definitionally equal to base.
+            -- tube @ 0  =  body[i := 0]
+            let tubeAt0 = eval (beta body (TInterval I0))
+            requireEqualEndpt ctx tubeAt0 (eval base)
         tube' -> do
+            -- For a non-lambda tube we require it to be a path over A,
+            -- then enforce the same boundary condition.
             tubeTy <- infer ctx tube'
             case eval tubeTy of
-                TPath a _ _
-                    | definitionallyEqualCtx ctx a aTy' -> return ()
+                TPath a u _
+                    | definitionallyEqualCtx ctx a aTy' ->
+                        -- u is tube @ 0; it must equal base.
+                        requireEqualEndpt ctx (eval u) (eval base)
+                    | otherwise ->
+                        Left (TypeMismatch (eval aTy') (eval a))
                 other -> Left (ExpectedPath other)
     return aTy'
 

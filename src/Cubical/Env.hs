@@ -6,7 +6,7 @@ module Cubical.Env
     , checkWithEnv
     ) where
 
-import Cubical.Syntax (Name, Term(..))
+import Cubical.Syntax (Name, Term(..), shift, subst)
 import Cubical.TypeChecker (Ctx, TypeError, infer, check)
 
 --------------------------------------------------------------------------------
@@ -22,12 +22,29 @@ type GlobalEnv = [(Name, Term, Term)]
 globalCtx :: GlobalEnv -> Ctx
 globalCtx genv = map (\(n, ty, _) -> (n, ty)) (reverse genv)
 
--- | Wrap a term so global definitions are in scope as let-bindings.
--- applyGlobals [(x,T,v), ...] t = (λx. t) v, ordered outermost-first.
+-- | Substitute all global definitions into a term directly via de Bruijn
+-- substitution, rather than wrapping in TApp/TAbs chains.
+--
+-- The parser assigns globals indices starting at (length localEnv).
+-- At the top level localEnv is empty, so globals occupy indices 0..n-1
+-- with the most-recent global at index 0.
+--
+-- We substitute one global at a time, outermost (highest index) first,
+-- so that earlier substitutions don't disturb the indices of later ones.
+-- After substituting index k, we shift the term down by 1 to close the gap.
 applyGlobals :: GlobalEnv -> Term -> Term
-applyGlobals genv t = foldr wrap t (reverse genv)
+applyGlobals genv t = foldr substGlobal t indexedVals
   where
-    wrap (x, _ty, val) body = TApp (TAbs x body) val
+    n            = length genv
+    -- genv is most-recent first; reverse gives oldest first.
+    -- Oldest global has the highest index (n-1), newest has index 0.
+    vals         = map (\(_, _, v) -> v) (reverse genv)
+    indexedVals  = zip [n-1, n-2 .. 0] vals
+
+    -- Substitute the global at de Bruijn index k with its value v,
+    -- then shift the whole term down by 1 to account for the removed binding.
+    substGlobal (k, v) body =
+        shift (-1) k (subst k (shift k 0 v) body)
 
 -- | Infer the type of a term in the context of a GlobalEnv.
 inferWithEnv :: GlobalEnv -> Term -> Either TypeError Term

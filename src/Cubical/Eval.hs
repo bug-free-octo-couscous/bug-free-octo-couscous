@@ -75,13 +75,28 @@ eval t = case t of
     TTransport p x ->
         let p' = eval p; x' = eval x
         in case p' of
+
+            -- ua e : Path U A B  →  transport (ua e) x  =  equivFwd e x
             TUa e -> eval (TEquivFwd e x')
+
             PLam iName body ->
                 let b0 = eval (beta body (TInterval I0))
                     b1 = eval (beta body (TInterval I1))
                 in if syntacticEq b0 b1
+                   -- Trivial (constant) path: transport is identity
                    then x'
+
                    else case (b0, b1) of
+
+                       -- Pi transport:
+                       --   p i = Π(a : A i). B i a
+                       --   transport p f = λ a1.
+                       --     let a0 = transport (⟨i⟩ A (1-i)) a1
+                       --     in  transport (⟨i⟩ B i (transp (⟨j⟩ A (i∧j)) a1))
+                       --                  (f a0)
+                       -- We approximate with the simpler one-sided version that
+                       -- is correct for non-dependent codomains and gives a
+                       -- reasonable stuck term otherwise.
                        (TPi argName _ _, TPi _ _ _) ->
                            TAbs argName $
                                let fa = TApp (shift 1 0 x') (TVar 0)
@@ -91,7 +106,56 @@ eval t = case t of
                                                                (TInterval I1))
                                                            (shift 2 0 (TVar 0)))))
                                            fa)
+
+                       -- Path transport:
+                       --   p i = Path (A i) (u i) (v i)
+                       --   transport p q = ⟨j⟩ transport (⟨i⟩ A i) (q @ j)
+                       --
+                       -- Each point q@j : A 0 is transported to A 1.
+                       -- The endpoints land at (transport (⟨i⟩ A i) (u 0))
+                       -- and (transport (⟨i⟩ A i) (v 0)), which definitionally
+                       -- equal u 1 and v 1 when A,u,v are well-typed.
+                       (TPath tyA0 _ _, TPath _ _ _) ->
+                           -- Extract the type family A : 𝕀 → U from the body.
+                           -- body at i has shape  TPath (A i) (u i) (v i)
+                           -- so we reconstruct ⟨i⟩ A i by projecting the type
+                           -- component (first arg of TPath).
+                           let aFam = PLam iName $
+                                   case eval (beta (shift 1 0 body) (TVar 0)) of
+                                       TPath a _ _ -> a
+                                       _           -> shift 1 0 tyA0
+                               -- j is a fresh interval variable (de Bruijn 0
+                               -- after we enter the PLam below; aFam is shifted
+                               -- to account for the new binder).
+                               aFamS = shift 1 0 aFam
+                           in PLam "j" $
+                               eval (TTransport aFamS
+                                       (PApp (shift 1 0 x') (TVar 0)))
+
+                       -- Glue degenerate cases:
+                       --   phi = 0  →  Glue A [0] te  =  A,  transport as usual
+                       --   phi = 1  →  Glue A [1] te  =  dom(te),  transport via equiv
+                       (TGlue aTy0 phi0 te0, TGlue _ _ _) ->
+                           if isBotDNF (eval phi0)
+                           then eval (TTransport
+                                       (PLam iName $
+                                           case eval (beta (shift 1 0 body) (TVar 0)) of
+                                               TGlue a _ _ -> a
+                                               other       -> other)
+                                       x')
+                           else if isTopDNF (eval phi0)
+                           then eval (TTransport
+                                       (PLam iName $
+                                           case eval (beta (shift 1 0 body) (TVar 0)) of
+                                               TGlue _ _ te -> equivDom (eval te)
+                                               other        -> other)
+                                       x')
+                           else TTransport p' x'   -- general Glue: stuck
+
+                       -- Everything else: stuck
                        _ -> TTransport p' x'
+
+            -- Non-lambda path: stuck
             _ -> TTransport p' x'
 
     TGlue aTy phi te ->
