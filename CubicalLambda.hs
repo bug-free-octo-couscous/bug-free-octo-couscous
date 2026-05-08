@@ -416,6 +416,18 @@ requireEqual ctx expected got
     | definitionallyEqualCtx ctx expected got = Right ()
     | otherwise = Left (TypeMismatch (eval expected) (eval got))
 
+-- Endpoint check with detailed error message
+requireEqualEndpt :: Ctx -> Term -> Term -> Either TypeError ()
+requireEqualEndpt ctx expected got
+    | definitionallyEqualCtx ctx expected got = Right ()
+    | otherwise = Left (Other
+        (  "endpoint mismatch (ctx_depth=" ++ show (length ctx)
+        ++ ", ctx=" ++ show (map fst ctx) ++ ")"
+        ++ "\n  expected=" ++ showTerm (map fst ctx) (eval expected)
+        ++ "  [raw=" ++ show (eval expected) ++ "]"
+        ++ "\n  got=" ++ showTerm (map fst ctx) (eval got)
+        ++ "  [raw=" ++ show (eval got) ++ "]"))
+
 -- | Try to reduce a stuck  PApp p r  using p's declared type from the context.
 -- If p : Path A u v and r evaluates to I0 → return u
 --                        r evaluates to I1 → return v
@@ -856,19 +868,21 @@ check ctx (TAbs x body) ty =
 check ctx (PLam i body) ty =
     case eval ty of
         TPath aTy u v -> do
-            -- Context extended with the interval variable.
+            -- Context extended with the interval variable (for body check).
             let ctx' = extendCtx i intervalTy ctx
-            -- Determine body type (heterogeneous vs homogeneous).
+            -- Determine body type: plain types shift by 1 for ctx'.
             let bodyTy = case eval aTy of
-                    PLam {} -> eval aTy
-                    plain   -> plain
-            -- Evaluate body at each endpoint.
+                    p@(PLam {}) -> p
+                    plain       -> shift 1 0 plain
+            -- beta-reduce body at each endpoint: i is gone, result lives in ctx.
             let bodyAt0 = eval (beta body (TInterval I0))
                 bodyAt1 = eval (beta body (TInterval I1))
-            -- Endpoint checks in ctx' so path boundary reduction fires.
-            requireEqual ctx' (eval u) bodyAt0
-            requireEqual ctx' (eval v) bodyAt1
-            -- Check the body under the interval binder.
+            -- Endpoint coherence checked in ctx (not ctx'): bodyAt0/bodyAt1
+            -- live in ctx after beta, and h/f/g are all visible here for
+            -- reducePAppByType to fire on stuck (h x) @ 0 etc.
+            requireEqualEndpt ctx (eval u) bodyAt0
+            requireEqualEndpt ctx (eval v) bodyAt1
+            -- Check the body itself under the interval binder.
             check ctx' body bodyTy
         other -> Left (ExpectedPath other)
 

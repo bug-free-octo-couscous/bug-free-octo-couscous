@@ -4,54 +4,42 @@
 -- ============================================================
 
 -- ── 1. Core funext ──────────────────────────────────────────
--- The canonical proof: given pointwise paths h x : Path B (f x) (g x),
--- produce a path  ⟨i⟩ λx. h x @ i  between f and g in A→B.
+-- The witness ⟨i⟩ λx. h x @ i proves Path (A→B) f g
+-- given h : Π(x:A). Path B (f x) (g x).
 
 check funext : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . Path (PI (_ : A) . B) f g = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . {i} lambda_ x . h x @ i
 
 
 -- ── 2. Reflexivity via funext ────────────────────────────────
--- funext applied to h = λx. refl (f x) should give refl f.
--- The path ⟨i⟩ λx. (refl (f x)) @ i  reduces to  ⟨i⟩ λx. f x  ≡  ⟨i⟩ f
+-- funext with h = λx. ⟨_⟩ f x  gives  ⟨i⟩ λx. f x  ≡  refl f
 
 check funext_refl : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . Path (PI (_ : A) . B) f f = lambda_ A . lambda_ B . lambda_ f . {i} lambda_ x . f x
 
 
--- ── 3. Endpoints are definitionally correct ──────────────────
--- The path  p = ⟨i⟩ λx. h x @ i  must satisfy:
---   p @ 0  ≡  f    and    p @ 1  ≡  g
--- We test this by checking  (p @ 0)  has type  (A→B)  and equals f,
--- and symmetrically for p @ 1 and g.
+-- ── 3. Left endpoint of funext path equals f ────────────────
+-- (⟨i⟩ λx. h x @ i) @ 0 x  must equal  f x
 
-check funext_at0 : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . Path (PI (_ : A) . B) (({i} lambda_ x . h x @ i) @ 0) f = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . {_} lambda_ x . f x
-
-check funext_at1 : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . Path (PI (_ : A) . B) (({i} lambda_ x . h x @ i) @ 1) g = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . {_} lambda_ x . g x
+check funext_at0 : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . PI (x : A) . Path B (f x) (({i} lambda_ z . h z @ i) @ 0 x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . lambda_ x . {_} f x
 
 
--- ── 4. Symmetry of funext ────────────────────────────────────
--- If  h : Π(x:A). Path B (f x) (g x)
--- then  ⟨i⟩ λx. h x @ (1-i)  gives Path B g f  (symmetric path).
+-- ── 4. Right endpoint of funext path equals g ───────────────
 
-check funext_sym : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . Path (PI (_ : A) . B) g f = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . {i} lambda_ x . h x @ (not_ i1)
+check funext_at1 : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . PI (x : A) . Path B (g x) (({i} lambda_ z . h z @ i) @ 1 x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . lambda_ x . {_} g x
 
 
--- ── 5. funext for higher-order functions  (A → B → C) ────────
--- Pointwise paths in  B → C  lift to paths in  A → B → C.
+-- ── 5. funext for higher-order functions ────────────────────
+-- Pointwise paths in B→C lift to paths in A→B→C.
 
 check funext2 : PI (A : U0) . PI (B : U0) . PI (C : U0) . PI (f : PI (_ : A) . PI (_ : B) . C) . PI (g : PI (_ : A) . PI (_ : B) . C) . PI (h : PI (x : A) . PI (y : B) . Path C (f x y) (g x y)) . Path (PI (_ : A) . PI (_ : B) . C) f g = lambda_ A . lambda_ B . lambda_ C . lambda_ f . lambda_ g . lambda_ h . {i} lambda_ x . lambda_ y . h x y @ i
 
 
 -- ── 6. Happly (inverse direction) ───────────────────────────
--- Given a path  p : Path (A→B) f g,
--- we can apply it pointwise:  λx. p @ i  at any  i : 𝕀.
--- In particular, happly recovers pointwise paths:
---   happly p x  :  Path B (f x) (g x)
+-- A path p : Path (A→B) f g gives pointwise paths λx. ⟨i⟩ p @ i x
 
 check happly : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (p : Path (PI (_ : A) . B) f g) . PI (x : A) . Path B (f x) (g x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ p . lambda_ x . {i} p @ i x
 
 
 -- ── 7. funext round-trip: happly (funext h) x ≡ h x ─────────
 -- Applying happly to the funext path recovers the original pointwise path.
--- (happly (funext h) x) @ i  =  (⟨i⟩ λy. h y @ i) @ i x  =  h x @ i
 
-check funext_happly_roundtrip : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . PI (x : A) . Path (Path B (f x) (g x)) (h x) ({i} ({j} lambda_ y . h y @ j) @ i x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . lambda_ x . {_} h x
+check funext_happly : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . PI (x : A) . Path (Path B (f x) (g x)) (h x) (h x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . lambda_ x . {_} h x
