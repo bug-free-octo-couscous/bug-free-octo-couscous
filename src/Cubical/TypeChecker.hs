@@ -10,10 +10,11 @@ module Cubical.TypeChecker
     , reportInfer, reportCheck
     ) where
 
-import Cubical.Interval (I(..))
+import Cubical.Interval (I(..), DNF(..), Literal(..))
+import qualified Data.Set as Set
 import Cubical.Syntax
 import Cubical.Eval (eval, isTopDNF, isBotDNF)
-import Cubical.Equality (definitionallyEqualCtx)
+import Cubical.Equality (definitionallyEqualCtx, definitionallyEqualCtxR, EtaResult(..))
 
 --------------------------------------------------------------------------------
 -- Context & Errors
@@ -33,6 +34,7 @@ data TypeError
     | ExpectedEquiv Term
     | NotAnInterval Term
     | CannotInfer Term
+    | EtaFuelExhausted Term Term
     | Other String
     deriving (Eq)
 
@@ -55,6 +57,11 @@ instance Show TypeError where
         CannotInfer t ->
             "  Cannot infer type of term without annotation:\n    " ++ show t
             ++ "\n  (Tip: use 'check' instead of 'infer', or add a type annotation)"
+        EtaFuelExhausted t1 t2 ->
+            "  Eta-equality check ran out of fuel (terms may be equal but are too\n"
+            ++ "  deeply nested to decide automatically).\n"
+            ++ "    lhs : " ++ show t1 ++ "\n"
+            ++ "    rhs : " ++ show t2
         Other msg -> "  " ++ msg
 
 extendCtx :: Name -> Term -> Ctx -> Ctx
@@ -66,20 +73,24 @@ lookupCtx i ctx
     | otherwise = Right (shift (i + 1) 0 (snd (ctx !! i)))
 
 requireEqual :: Ctx -> Term -> Term -> Either TypeError ()
-requireEqual ctx expected got
-    | definitionallyEqualCtx ctx expected got = Right ()
-    | otherwise = Left (TypeMismatch (eval expected) (eval got))
+requireEqual ctx expected got =
+    case definitionallyEqualCtxR ctx expected got of
+        Equal     -> Right ()
+        NotEqual  -> Left (TypeMismatch (eval expected) (eval got))
+        Exhausted -> Left (EtaFuelExhausted (eval expected) (eval got))
 
 requireEqualEndpt :: Ctx -> Term -> Term -> Either TypeError ()
-requireEqualEndpt ctx expected got
-    | definitionallyEqualCtx ctx expected got = Right ()
-    | otherwise = Left (Other
-        (  "endpoint mismatch (ctx_depth=" ++ show (length ctx)
-        ++ ", ctx=" ++ show (map fst ctx) ++ ")"
-        ++ "\n  expected=" ++ showTerm (map fst ctx) (eval expected)
-        ++ "  [raw=" ++ show (eval expected) ++ "]"
-        ++ "\n  got=" ++ showTerm (map fst ctx) (eval got)
-        ++ "  [raw=" ++ show (eval got) ++ "]"))
+requireEqualEndpt ctx expected got =
+    case definitionallyEqualCtxR ctx expected got of
+        Equal    -> Right ()
+        NotEqual -> Left (Other
+            (  "endpoint mismatch (ctx_depth=" ++ show (length ctx)
+            ++ ", ctx=" ++ show (map fst ctx) ++ ")"
+            ++ "\n  expected=" ++ showTerm (map fst ctx) (eval expected)
+            ++ "  [raw=" ++ show (eval expected) ++ "]"
+            ++ "\n  got=" ++ showTerm (map fst ctx) (eval got)
+            ++ "  [raw=" ++ show (eval got) ++ "]"))
+        Exhausted -> Left (EtaFuelExhausted (eval expected) (eval got))
 
 requireUniverse :: Ctx -> Term -> Either TypeError Level
 requireUniverse ctx t = do
@@ -101,6 +112,96 @@ requireEquiv ctx t = do
     case eval ty of
         TEquiv a b -> Right (eval a, eval b)
         other      -> Left (ExpectedEquiv other)
+
+--------------------------------------------------------------------------------
+-- Face-restriction helpers (used by hcomp checking)
+--------------------------------------------------------------------------------
+
+-- | @unless cond err@ — like the Prelude version but in Either.
+unless :: Bool -> Either TypeError () -> Either TypeError ()
+unless True  _   = Right ()
+unless False act = act
+
+-- | Apply a single DNF literal as a substitution on a term.
+--   Pos n    means  iₙ = 1   (substitute IVar n ↦ I1)
+--   NegVar n means  iₙ = 0   (substitute IVar n ↦ I0)
+--
+--   Interval variables are encoded as de Bruijn indices *inside* the interval
+--   algebra (IVar k), separate from term-level de Bruijn.  They don't appear
+--   in the Ctx, so no shifting of term variables is needed — we just rewrite
+--   every occurrence of TInterval (IVar n) / TCube that mentions n.
+applyLiteral :: Literal -> Term -> Term
+applyLiteral lit = go
+  where
+    (n, val) = case lit of
+        Pos    k -> (k, I1)
+        NegVar k -> (k, I0)
+
+    goI :: I -> I
+    goI (IVar k)   | k == n = val
+    goI (Meet a b)          = Meet (goI a) (goI b)
+    goI (Join a b)          = Join (goI a) (goI b)
+    goI (Neg  a)            = Neg  (goI a)
+    goI other               = other
+
+    go :: Term -> Term
+    go t = case t of
+        TInterval i    -> eval (TInterval (goI i))
+        TCube (DNF cs) ->
+            -- Substitute the literal into each cube by treating each Literal
+            -- as an IVar expression and running it through goI, then
+            -- re-normalising the whole DNF.
+            let substLit (Pos    k) = goI (IVar k)
+                substLit (NegVar k) = Neg (goI (IVar k))
+                -- A cube is a conjunction; substitute and re-evaluate each lit.
+                substCube c = foldr (\l acc -> Meet (substLit l) acc) I1
+                                    (Set.toList c)
+                -- The full DNF is a disjunction of substituted cubes.
+                combined = foldr (\c acc -> Join (substCube c) acc) I0
+                                 (Set.toList cs)
+            in eval (TInterval combined)
+        TApp  f a      -> eval $ TApp  (go f) (go a)
+        TAbs  x b      -> TAbs  x (go b)
+        TPi   x a b    -> TPi   x (go a) (go b)
+        TPath a u v    -> TPath   (go a) (go u) (go v)
+        PLam  i b      -> PLam  i (go b)
+        PApp  p r      -> eval $ PApp  (go p) (go r)
+        THComp a ph u u0 -> eval $ THComp (go a) (go ph) (go u) (go u0)
+        TEquiv a b     -> TEquiv (go a) (go b)
+        TMkEquiv a b f g eta eps ->
+            TMkEquiv (go a) (go b) (go f) (go g) (go eta) (go eps)
+        TEquivFwd e x  -> eval $ TEquivFwd (go e) (go x)
+        TUa e          -> TUa (go e)
+        TTransport p x -> eval $ TTransport (go p) (go x)
+        TGlue a ph te  -> eval $ TGlue (go a) (go ph) (go te)
+        TGlueElem ph x a -> eval $ TGlueElem (go ph) (go x) (go a)
+        TUnglue ph te g  -> eval $ TUnglue (go ph) (go te) (go g)
+        _              -> t   -- TVar, TUniv, TIntervalTy: no interval vars
+
+-- | Check that @tubeAt0 ≡ base@ holds on every face of @phi@.
+--
+--   For each cube (conjunction of literals) in phi's DNF we:
+--     1. Apply all the literal substitutions to both sides.
+--     2. Require definitional equality of the results.
+--
+--   This precisely encodes the condition  [φ = 1] ⊢ u 0 ≡ u₀:
+--   each cube is one maximal context in which φ is forced to be 1.
+--
+--   When phi = ⊥ (no cubes) the loop is empty and the check trivially passes.
+--   When phi = ⊤ (one empty cube, no literals) the substitution is the
+--   identity, recovering the unconditional check.
+checkFaces :: Ctx -> Term -> Term -> Term -> Either TypeError ()
+checkFaces ctx phi tubeAt0 base =
+    case phi of
+        TCube (DNF cubes) ->
+            mapM_ checkCube (Set.toList cubes)
+        _ -> requireEqualEndpt ctx tubeAt0 base   -- non-DNF phi: fall back
+  where
+    checkCube cube =
+        let applyAll = foldr (.) id (map applyLiteral (Set.toList cube))
+            lhs = eval (applyAll tubeAt0)
+            rhs = eval (applyAll base)
+        in requireEqualEndpt ctx lhs rhs
 
 --------------------------------------------------------------------------------
 -- Type Inference
@@ -256,32 +357,46 @@ infer ctx (THComp aTy phi tube base) = do
     _ <- requireUniverse ctx aTy
     let aTy' = eval aTy
     checkInterval ctx phi
-    -- 1. base must have type A
+    -- 1. base : A
     check ctx base aTy'
-    -- 2. Check the tube and enforce the boundary condition tube @ 0 ≡ base
+    -- 2. Tube well-typedness + boundary conditions
+    --
+    --    hcomp A φ u u₀ is well-typed when:
+    --      (a) u : (i : 𝕀) → A                          (tube has the right type)
+    --      (b) [φ = 1] ⊢ u 0 ≡ u₀                       (tube agrees with base at i=0)
+    --      (c) [φ = 1] ⊢ u 1 : A                         (u@1 is well-formed; implied by (a))
+    --
+    --    Condition (b) is checked *per face* of φ's DNF.  Each cube in the DNF
+    --    is a conjunction of literals (iₙ = 0  or  iₙ = 1).  We substitute
+    --    those assignments into both u@0 and u₀ before comparing, which gives
+    --    the check its correct meaning under the face restriction [φ = 1].
+    --
+    --    When φ = ⊥ (bot) no boundary condition is imposed at all (vacuously true).
+    --    When φ = ⊤ (top) the check is unconditional, same as before.
+    let phi' = eval phi
     _ <- case eval tube of
         PLam i body -> do
-            -- The tube body lives under a fresh interval variable i : 𝕀.
-            -- A must be shifted so its de Bruijn indices are valid in the
-            -- extended context.
+            -- (a) check body : A in the extended context
             let ctx'  = extendCtx i intervalTy ctx
                 aTy'S = shift 1 0 aTy'
             check ctx' body aTy'S
-            -- Boundary check: (tube @ 0) must be definitionally equal to base.
-            -- tube @ 0  =  body[i := 0]
+            -- (b) for each face of φ, check u@0 ≡ u₀ under that face's substitutions
             let tubeAt0 = eval (beta body (TInterval I0))
-            requireEqualEndpt ctx tubeAt0 (eval base)
+            checkFaces ctx phi' tubeAt0 (eval base)
         tube' -> do
-            -- For a non-lambda tube we require it to be a path over A,
-            -- then enforce the same boundary condition.
+            -- Non-lambda tube: treat it as a Path A u v
             tubeTy <- infer ctx tube'
             case eval tubeTy of
-                TPath a u _
-                    | definitionallyEqualCtx ctx a aTy' ->
-                        -- u is tube @ 0; it must equal base.
-                        requireEqualEndpt ctx (eval u) (eval base)
-                    | otherwise ->
+                TPath a u v -> do
+                    -- The path must lie over A
+                    unless (definitionallyEqualCtx ctx (eval a) aTy') $
                         Left (TypeMismatch (eval aTy') (eval a))
+                    -- Both endpoints must have type A (redundant if a ≡ A,
+                    -- but makes the error local and explicit)
+                    check ctx (eval u) aTy'
+                    check ctx (eval v) aTy'
+                    -- (b) for each face of φ, u (= tube@0) must equal base
+                    checkFaces ctx phi' (eval u) (eval base)
                 other -> Left (ExpectedPath other)
     return aTy'
 

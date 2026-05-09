@@ -243,7 +243,7 @@ univP :: Parser Term
 univP = lexeme $ Parser $ \s ->
     case s of
         ('U':rest) -> case span isDigit rest of
-            (ds@(_:_), rem) -> Right (TUniv (read ds), rem)
+            (ds@(_:_), rest') -> Right (TUniv (read ds), rest')
             _               -> Left "expected U<n>"
         _ -> Left "expected universe"
 
@@ -261,8 +261,8 @@ intervalLitP :: Parser Term
 intervalLitP = fmap TInterval $ lexeme $ Parser $ \s ->
     case s of
         ('i':rest) -> case span isDigit rest of
-            (ds@(_:_), rem) | notIdentCont rem
-                -> Right (IVar (read ds), rem)
+            (ds@(_:_), rest') | notIdentCont rest'
+                -> Right (IVar (read ds), rest')
             _   -> Left "not an interval literal"
         ('0':rest) | notIdentCont rest -> Right (I0, rest)
         ('1':rest) | notIdentCont rest -> Right (I1, rest)
@@ -366,15 +366,6 @@ varG g env = do
         Just i  -> return (TVar i)
         Nothing -> failP ("unbound variable: " ++ x)
 
--- Keep old termWith/atomP/varP so parseTerm still works (used standalone).
-termWith :: Env -> Parser Term
-termWith env = twG [] env
-
-atomP :: Env -> Parser Term
-atomP env = awG [] env
-
-varP :: Env -> Parser Term
-varP = varG []
 
 --------------------------------------------------------------------------------
 -- Statements (top-level declarations)
@@ -418,7 +409,3 @@ checkStmtP g = do
     symbol "="
     val <- twG g []
     return (SCheck x ty val)
-
--- | termWithG kept for any external callers; now just delegates to twG.
-termWithG :: GlobalEnv -> Env -> Parser Term
-termWithG = twG
