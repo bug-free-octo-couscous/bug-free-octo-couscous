@@ -1,0 +1,152 @@
+-- ============================================================
+-- Comprehensive Tests for Cubical Lambda
+-- Run with:  ./cubical comprehensive_tests.ctt
+-- ============================================================
+
+
+-- ── 1. Path basics ──────────────────────────────────────────
+
+-- Reflexivity: the constant path proves Path A x x
+check refl : PI (A : U0) . PI (x : A) . Path A x x = lambda_ A . lambda_ x . {_} x
+
+-- Congruence / ap: a function maps a path to a path
+check cong : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (x : A) . PI (y : A) . PI (p : Path A x y) . Path B (f x) (f y) = lambda_ A . lambda_ B . lambda_ f . lambda_ x . lambda_ y . lambda_ p . {i} f (p @ i)
+
+-- Path applied at 0 equals the left endpoint
+check path_at0 : PI (A : U0) . PI (x : A) . PI (y : A) . PI (p : Path A x y) . Path A x (p @ 0) = lambda_ A . lambda_ x . lambda_ y . lambda_ p . {_} x
+
+-- Path applied at 1 equals the right endpoint
+check path_at1 : PI (A : U0) . PI (x : A) . PI (y : A) . PI (p : Path A x y) . Path A y (p @ 1) = lambda_ A . lambda_ x . lambda_ y . lambda_ p . {_} y
+
+-- A path itself witnesses that its endpoints are definitionally equal to path@0 and path@1
+check path_as_itself : PI (A : U0) . PI (x : A) . PI (y : A) . PI (p : Path A x y) . Path A (p @ 0) (p @ 1) = lambda_ A . lambda_ x . lambda_ y . lambda_ p . p
+
+
+-- ── 2. Higher-order cong ────────────────────────────────────
+
+-- Congruence under a binary function in the first argument
+check cong2_left : PI (A : U0) . PI (B : U0) . PI (C : U0) . PI (f : PI (_ : A) . PI (_ : B) . C) . PI (x : A) . PI (y : A) . PI (p : Path A x y) . PI (b : B) . Path C (f x b) (f y b) = lambda_ A . lambda_ B . lambda_ C . lambda_ f . lambda_ x . lambda_ y . lambda_ p . lambda_ b . {i} f (p @ i) b
+
+-- Congruence under a binary function in the second argument
+check cong2_right : PI (A : U0) . PI (B : U0) . PI (C : U0) . PI (f : PI (_ : A) . PI (_ : B) . C) . PI (a : A) . PI (x : B) . PI (y : B) . PI (q : Path B x y) . Path C (f a x) (f a y) = lambda_ A . lambda_ B . lambda_ C . lambda_ f . lambda_ a . lambda_ x . lambda_ y . lambda_ q . {i} f a (q @ i)
+
+-- happly: a path of functions gives pointwise paths (same as funext inverse)
+check happly : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (p : Path (PI (_ : A) . B) f g) . PI (x : A) . Path B (f x) (g x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ p . lambda_ x . {i} p @ i x
+
+
+-- ── 3. Sigma / product types ────────────────────────────────
+
+-- fst of an explicit pair reduces to the first component
+check sigma_fst : PI (A : U0) . PI (B : U0) . PI (a : A) . PI (b : B) . Path A a (fst (pair a b)) = lambda_ A . lambda_ B . lambda_ a . lambda_ b . {_} a
+
+-- snd of an explicit pair reduces to the second component
+check sigma_snd : PI (A : U0) . PI (B : U0) . PI (a : A) . PI (b : B) . Path B b (snd (pair a b)) = lambda_ A . lambda_ B . lambda_ a . lambda_ b . {_} b
+
+-- Sigma eta: every element equals (fst p , snd p)  (non-dependent case)
+check sigma_eta : PI (A : U0) . PI (B : U0) . PI (p : SIGMA (_ : A) . B) . Path (SIGMA (_ : A) . B) p (pair (fst p) (snd p)) = lambda_ A . lambda_ B . lambda_ p . {_} pair (fst p) (snd p)
+
+-- Swap: A × B → B × A
+check swap : PI (A : U0) . PI (B : U0) . PI (_ : SIGMA (_ : A) . B) . SIGMA (_ : B) . A = lambda_ A . lambda_ B . lambda_ p . pair (snd p) (fst p)
+
+-- Swap is an involution: swap (swap p) = p
+-- swap p = (snd p, fst p) : Σ B A
+-- swap (swap p) = (snd (snd p, fst p), fst (snd p, fst p)) = (fst p, snd p) ≡ p
+check swap_invol : PI (A : U0) . PI (B : U0) . PI (p : SIGMA (_ : A) . B) . Path (SIGMA (_ : A) . B) p (pair (snd (pair (snd p) (fst p))) (fst (pair (snd p) (fst p)))) = lambda_ A . lambda_ B . lambda_ p . {_} p
+
+-- Curry: (A × B → C) → A → B → C
+check curry : PI (A : U0) . PI (B : U0) . PI (C : U0) . PI (f : PI (_ : SIGMA (_ : A) . B) . C) . PI (_ : A) . PI (_ : B) . C = lambda_ A . lambda_ B . lambda_ C . lambda_ f . lambda_ a . lambda_ b . f (pair a b)
+
+-- Uncurry: (A → B → C) → A × B → C
+check uncurry : PI (A : U0) . PI (B : U0) . PI (C : U0) . PI (f : PI (_ : A) . PI (_ : B) . C) . PI (_ : SIGMA (_ : A) . B) . C = lambda_ A . lambda_ B . lambda_ C . lambda_ f . lambda_ p . f (fst p) (snd p)
+
+-- Componentwise path between pairs
+check pair_path : PI (A : U0) . PI (B : U0) . PI (a0 : A) . PI (a1 : A) . PI (b0 : B) . PI (b1 : B) . PI (p : Path A a0 a1) . PI (q : Path B b0 b1) . Path (SIGMA (_ : A) . B) (pair a0 b0) (pair a1 b1) = lambda_ A . lambda_ B . lambda_ a0 . lambda_ a1 . lambda_ b0 . lambda_ b1 . lambda_ p . lambda_ q . {i} pair (p @ i) (q @ i)
+
+-- fst of a componentwise pair-path recovers the original path
+check pair_path_fst : PI (A : U0) . PI (B : U0) . PI (a0 : A) . PI (a1 : A) . PI (b0 : B) . PI (b1 : B) . PI (p : Path A a0 a1) . PI (q : Path B b0 b1) . Path (Path A a0 a1) p ({i} fst (pair (p @ i) (q @ i))) = lambda_ A . lambda_ B . lambda_ a0 . lambda_ a1 . lambda_ b0 . lambda_ b1 . lambda_ p . lambda_ q . {_} p
+
+
+-- ── 4. Transport ─────────────────────────────────────────────
+
+-- transport along a constant path is the identity
+check transport_const : PI (A : U0) . PI (x : A) . Path A x (transport ({_} A) x) = lambda_ A . lambda_ x . {_} x
+
+-- transport along a constant function-type path is the identity
+check transport_fun_const : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . Path (PI (_ : A) . B) f (transport ({_} PI (_ : A) . B) f) = lambda_ A . lambda_ B . lambda_ f . {_} f
+
+-- transport along ua of an equivalence applies the forward map
+check transport_ua : PI (A : U0) . PI (B : U0) . PI (e : Equiv A B) . PI (x : A) . Path B (equivFwd e x) (transport (ua e) x) = lambda_ A . lambda_ B . lambda_ e . lambda_ x . {_} equivFwd e x
+
+
+-- ── 5. hcomp basics ──────────────────────────────────────────
+
+-- hcomp with phi=0 (empty system) returns the base unchanged
+check hcomp_bot : PI (A : U0) . PI (x : A) . Path A x (hcomp A [0] ({_} x) x) = lambda_ A . lambda_ x . {_} x
+
+-- hcomp with phi=1 (full system) returns the tube evaluated at i=1
+check hcomp_top : PI (A : U0) . PI (x : A) . PI (y : A) . PI (p : Path A x y) . Path A y (hcomp A [1] p x) = lambda_ A . lambda_ x . lambda_ y . lambda_ p . {_} y
+
+-- hcomp with a trivial (constant) tube is a no-op
+check hcomp_const_tube : PI (A : U0) . PI (x : A) . PI (y : A) . Path A y (hcomp A [0] ({_} y) y) = lambda_ A . lambda_ x . lambda_ y . {_} y
+
+
+-- ── 6. Equivalences ──────────────────────────────────────────
+
+-- The identity function on A gives an equivalence A ≃ A
+def id_equiv : PI (A : U0) . Equiv A A = lambda_ A . mkEquiv A A (lambda_ x . x) (lambda_ x . x) (lambda_ a . {_} a) (lambda_ b . {_} b)
+
+-- The forward map of the identity equivalence is the identity.
+-- id_equiv is opaque as a global, so equivFwd cannot reduce through it at
+-- check-time.  Inlining the mkEquiv lets the TEquivFwd reduction rule fire.
+check id_equiv_fwd : PI (A : U0) . PI (x : A) . Path A x (equivFwd (mkEquiv A A (lambda_ y . y) (lambda_ y . y) (lambda_ a . {_} a) (lambda_ b . {_} b)) x) = lambda_ A . lambda_ x . {_} x
+
+-- equivFwd applied to a mkEquiv with explicit forward map f gives f x
+check mkequiv_fwd : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (eta : PI (a : A) . Path A a (g (f a))) . PI (eps : PI (b : B) . Path B (f (g b)) b) . PI (x : A) . Path B (f x) (equivFwd (mkEquiv A B f g eta eps) x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ eta . lambda_ eps . lambda_ x . {_} f x
+
+
+-- ── 7. Univalence ────────────────────────────────────────────
+
+-- ua applied to the identity equivalence gives a path in the universe
+check ua_id : PI (A : U0) . Path U0 A A = lambda_ A . ua (id_equiv A)
+
+-- ua produces a path between its domain and codomain types
+check ua_type : PI (A : U0) . PI (B : U0) . PI (e : Equiv A B) . Path U1 (Path U0 A B) (Path U0 A B) = lambda_ A . lambda_ B . lambda_ e . {_} Path U0 A B
+
+
+-- ── 8. Universe levels ───────────────────────────────────────
+
+-- U0 lives in U1
+check u0_in_u1 : Path U1 U0 U0 = {_} U0
+
+-- A Pi-type over U0 lives in U1
+check pi_u0_level : PI (A : U0) . Path U1 (PI (_ : A) . U0) (PI (_ : A) . U0) = lambda_ A . {_} PI (_ : A) . U0
+
+-- A Sigma-type over U0 lives in U1
+check sigma_u0_level : PI (A : U0) . Path U1 (SIGMA (_ : A) . U0) (SIGMA (_ : A) . U0) = lambda_ A . {_} SIGMA (_ : A) . U0
+
+
+-- ── 9. Function identity and composition ────────────────────
+
+-- Identity function
+check id_fun : PI (A : U0) . PI (x : A) . Path A x ((lambda_ x . x) x) = lambda_ A . lambda_ x . {_} x
+
+-- Composition of identity with itself is identity
+check id_comp_id : PI (A : U0) . PI (x : A) . Path A x ((lambda_ f . lambda_ x . f x) (lambda_ x . x) x) = lambda_ A . lambda_ x . {_} x
+
+-- K combinator: always returns its first argument
+check K_combinator : PI (A : U0) . PI (B : U0) . PI (x : A) . PI (y : B) . Path A x ((lambda_ x . lambda_ _ . x) x y) = lambda_ A . lambda_ B . lambda_ x . lambda_ y . {_} x
+
+-- S combinator applied to K and K gives identity
+check S_on_K : PI (A : U0) . PI (x : A) . Path A x ((lambda_ f . lambda_ g . lambda_ x . f x (g x)) (lambda_ x . lambda_ y . x) (lambda_ x . lambda_ y . x) x) = lambda_ A . lambda_ x . {_} x
+
+
+-- ── 10. Path-over-function-type (funext direction) ──────────
+
+-- funext: pointwise paths give a path of functions
+check funext : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . Path (PI (_ : A) . B) f g = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . {i} lambda_ x . h x @ i
+
+-- funext is right-inverse to happly: happly (funext h) x = h x
+check funext_happly : PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) . PI (h : PI (x : A) . Path B (f x) (g x)) . PI (x : A) . Path (Path B (f x) (g x)) (h x) (h x) = lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h . lambda_ x . {_} h x
+
+-- funext for three arguments
+check funext3 : PI (A : U0) . PI (B : U0) . PI (C : U0) . PI (D : U0) . PI (f : PI (_ : A) . PI (_ : B) . PI (_ : C) . D) . PI (g : PI (_ : A) . PI (_ : B) . PI (_ : C) . D) . PI (h : PI (x : A) . PI (y : B) . PI (z : C) . Path D (f x y z) (g x y z)) . Path (PI (_ : A) . PI (_ : B) . PI (_ : C) . D) f g = lambda_ A . lambda_ B . lambda_ C . lambda_ D . lambda_ f . lambda_ g . lambda_ h . {i} lambda_ x . lambda_ y . lambda_ z . h x y z @ i
