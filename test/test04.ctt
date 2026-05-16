@@ -1,0 +1,5 @@
+check sigma_eta :
+  PI (A : U0) . PI (B : U0) .
+  PI (p : SIGMA (_ : A) . B) .
+  Path (SIGMA (_ : A) . B) p (pair (fst p) (snd p)) =
+    lambda_ A . lambda_ B . lambda_ p . {_} pair (fst p) (snd p)

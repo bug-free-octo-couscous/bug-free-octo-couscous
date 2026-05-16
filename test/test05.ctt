@@ -1,0 +1,9 @@
+-- swap p = (snd p, fst p)
+-- swap (swap p) = (fst p, snd p) ≡ p
+check swap_invol :
+  PI (A : U0) . PI (B : U0) .
+  PI (p : SIGMA (_ : A) . B) .
+  Path (SIGMA (_ : A) . B) p
+       (pair (snd (pair (snd p) (fst p)))
+             (fst (pair (snd p) (fst p)))) =
+    lambda_ A . lambda_ B . lambda_ p . {_} p

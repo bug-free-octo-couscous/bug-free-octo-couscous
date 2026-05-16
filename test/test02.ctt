@@ -1,0 +1,7 @@
+check cong :
+  PI (A : U0) . PI (B : U0) . PI (f : PI (_ : A) . B) .
+  PI (x : A) . PI (y : A) . PI (p : Path A x y) .
+  Path B (f x) (f y) =
+    lambda_ A . lambda_ B . lambda_ f .
+    lambda_ x . lambda_ y . lambda_ p .
+    {i} f (p @ i)

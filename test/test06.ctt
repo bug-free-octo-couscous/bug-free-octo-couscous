@@ -1,0 +1,6 @@
+check transport_ua :
+  PI (A : U0) . PI (B : U0) .
+  PI (e : Equiv A B) . PI (x : A) .
+  Path B (equivFwd e x) (transport (ua e) x) =
+    lambda_ A . lambda_ B . lambda_ e . lambda_ x .
+    {_} equivFwd e x

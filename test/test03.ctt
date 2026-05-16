@@ -1,0 +1,7 @@
+check funext :
+  PI (A : U0) . PI (B : U0) .
+  PI (f : PI (_ : A) . B) . PI (g : PI (_ : A) . B) .
+  PI (h : PI (x : A) . Path B (f x) (g x)) .
+  Path (PI (_ : A) . B) f g =
+    lambda_ A . lambda_ B . lambda_ f . lambda_ g . lambda_ h .
+    {i} lambda_ x . h x @ i

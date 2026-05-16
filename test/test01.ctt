@@ -1,0 +1,2 @@
+check refl : PI (A : U0) . PI (x : A) . Path A x x =
+  lambda_ A . lambda_ x . {_} x

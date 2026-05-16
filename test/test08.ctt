@@ -1,0 +1,7 @@
+def id_equiv : PI (A : U0) . Equiv A A =
+  lambda_ A .
+    mkEquiv A A
+      (lambda_ x . x)
+      (lambda_ x . x)
+      (lambda_ a . {_} a)
+      (lambda_ b . {_} b)

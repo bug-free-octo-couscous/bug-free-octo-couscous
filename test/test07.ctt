@@ -1,0 +1,9 @@
+check pair_path :
+  PI (A : U0) . PI (B : U0) .
+  PI (a0 : A) . PI (a1 : A) .
+  PI (b0 : B) . PI (b1 : B) .
+  PI (p : Path A a0 a1) . PI (q : Path B b0 b1) .
+  Path (SIGMA (_ : A) . B) (pair a0 b0) (pair a1 b1) =
+    lambda_ A . lambda_ B . lambda_ a0 . lambda_ a1 .
+    lambda_ b0 . lambda_ b1 . lambda_ p . lambda_ q .
+    {i} pair (p @ i) (q @ i)
